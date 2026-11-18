@@ -1,14 +1,14 @@
 /*
  * wsbridge: the front of the window server for programs of the Mac.  SkyLight (the client library in the dyld cache) sends its MIG messages to a Mach port named by the bootstrap
- * service com.apple.windowserver.active; wsd (github.com/pearOS-bsd/misc, wsbsd) speaks the same messages on a Unix socket (SOCK_SEQPACKET: a datagram is a message and then the
+ * service com.apple.windowserver.active; WindowServer (github.com/pearOS-bsd/misc, wsbsd) speaks the same messages on a Unix socket (SOCK_SEQPACKET: a datagram is a message and then the
  * out-of-line payloads in the order of the descriptors; the port descriptors are descriptors of SCM_RIGHTS: the name is an index, 1 based, in the list of them).  This program is the
- * service: it takes the name from the launchd, receives the Mach messages, forwards them on a socket of wsd (one for each client process) and brings the replies back.
+ * service: it takes the name from the launchd, receives the Mach messages, forwards them on a socket of WindowServer (one for each client process) and brings the replies back.
  *
- * The rights: a port in a reply of wsd becomes a new Mach port of this program (it keeps the receive right, the client gets a send right); the messages that the client sends to it go
- * to wsd on the socket of the client.  A reply whose port name is not an index of a descriptor passed (wsd replays some replies recorded on a Mac) gives a port that is only a name for the
+ * The rights: a port in a reply of WindowServer becomes a new Mach port of this program (it keeps the receive right, the client gets a send right); the messages that the client sends to it go
+ * to WindowServer on the socket of the client.  A reply whose port name is not an index of a descriptor passed (WindowServer replays some replies recorded on a Mac) gives a port that is only a name for the
  * server.  The out-of-line payloads of a reply are copied into memory of this program and handed over as out-of-line descriptors.
  *
- * Not done yet: complex requests (ports and memory from the client to wsd), the events that wsd sends to a client (they come on the socket and have to go to the port that the client gave),
+ * Not done yet: complex requests (ports and memory from the client to WindowServer), the events that WindowServer sends to a client (they come on the socket and have to go to the port that the client gave),
  * memory of the surfaces (shared memory objects as Mach memory entries).  Own code (BSD); no header of Apple's.
  */
 typedef unsigned int u32;
@@ -53,12 +53,12 @@ static char oolpool[1 << 20];		/* the out-of-line payloads of the replies in fli
 static unsigned long oolpos;
 static u32 set;
 
-/* one socket to wsd for each client process (the window server counts a connection for each client) */
+/* one socket to WindowServer for each client process (the window server counts a connection for each client) */
 static struct { u32 pid; int fd; } clients[64];
-/* the ports that this program made for ports of wsd's replies: the port, the client that got it, and the descriptor that stands for it at wsd (-1: none, the socket of the client) */
+/* the ports that this program made for ports of WindowServer's replies: the port, the client that got it, and the descriptor that stands for it at WindowServer (-1: none, the socket of the client) */
 static struct { u32 port; u32 pid; int fd; } pmap[256];
 
-/* the event channels: wsd sends events on a socket (the end that this program keeps), and they go as Mach messages to the port that the client gave in its request (a send right that this program holds) */
+/* the event channels: WindowServer sends events on a socket (the end that this program keeps), and they go as Mach messages to the port that the client gave in its request (a send right that this program holds) */
 static struct { int fd; u32 port; } evch[64];
 
 static int
@@ -71,19 +71,19 @@ wsd_socket(u32 pid)
 
 	for (i = 0; i < 64; i++)
 		if (clients[i].fd != 0 && clients[i].pid == pid) return (clients[i].fd);
-	if (p == 0) p = "/tmp/wsd.sock";
+	if (p == 0) p = "/tmp/WindowServer.sock";
 	for (k = 0; k < sizeof(sa); k++) ((char *)&sa)[k] = 0;
 	for (k = 0; p[k] && k < 103; k++) sa.path[k] = p[k];
 	sa.len = sizeof(sa); sa.family = 1;				/* AF_UNIX */
 	fd = socket(1, 5, 0);						/* SOCK_SEQPACKET */
 	if (fd < 0 || connect(fd, &sa, sizeof(sa)) != 0) {
-		out("wsbridge: cannot connect to wsd at "); out(p); out("\n");
+		out("wsbridge: cannot connect to WindowServer at "); out(p); out("\n");
 		if (fd >= 0) close(fd);
 		return (-1);
 	}
 	for (i = 0; i < 64; i++)
 		if (clients[i].fd == 0) { clients[i].pid = pid; clients[i].fd = fd; break; }
-	{						/* the hello: wsd knows the peer of the socket (this program), not the client whose requests go over it */
+	{						/* the hello: WindowServer knows the peer of the socket (this program), not the client whose requests go over it */
 		u32 hello[7] = { 0, 28, 0, 0, 0, 0x50494400, pid };
 
 		send(fd, hello, 28, 0);
@@ -105,7 +105,7 @@ new_port(u32 pid, int fd)
 	return (p);
 }
 
-/* the datagram of wsd (a message, then payloads, with descriptors from SCM_RIGHTS) -> a Mach message in rp for the client */
+/* the datagram of WindowServer (a message, then payloads, with descriptors from SCM_RIGHTS) -> a Mach message in rp for the client */
 static int
 get_reply(int fd, u32 pid, u32 reply_remote)
 {
@@ -142,7 +142,7 @@ get_reply(int fd, u32 pid, u32 reply_remote)
 		for (i = 0; i < (int)ndesc && off + 12 <= size; i++) {
 			unsigned char *d = (unsigned char *)&rp + off;
 
-			if (d[11] == 0 && rp.h.id == 0x7d64 && i == 1) {	/* the answer to NewConnectionPort: its second port is the memory of the packages session (0x40 bytes, SLSPackagesSessionShmem: the client maps it with mach_vm_map; found with REA in SLSNewConnection); wsd has none, so it is zeroed memory */
+			if (d[11] == 0 && rp.h.id == 0x7d64 && i == 1) {	/* the answer to NewConnectionPort: its second port is the memory of the packages session (0x40 bytes, SLSPackagesSessionShmem: the client maps it with mach_vm_map; found with REA in SLSNewConnection); WindowServer has none, so it is zeroed memory */
 				u64 sz = 0x40;
 				u32 entry = 0;
 				void *mem = mmap(0, 0x1000, 3, 0x1002 /* MAP_ANON | MAP_PRIVATE */, -1, 0);
@@ -167,7 +167,7 @@ get_reply(int fd, u32 pid, u32 reply_remote)
 
 				if (fsz > 0 && fsz < 4096 && ftruncate(pfd, 4096) == 0)
 					fsz = 4096;				/* the client maps more than the pixels of a window of 1x1 (the state of the window): at least a page */
-				if (fsz > 0) {						/* shared memory of wsd: a Mach memory entry for it, which the client maps with mach_vm_map */
+				if (fsz > 0) {						/* shared memory of WindowServer: a Mach memory entry for it, which the client maps with mach_vm_map */
 					void *mem = mmap(0, (unsigned long)fsz, 3, 1, pfd, 0);
 					u64 sz = (u64)fsz;
 					u32 entry = 0;
@@ -233,7 +233,7 @@ send_complex(int fd)
 
 			if (nfds >= 8 && rq.h.id != 32000) return (-1);
 			if (rq.h.id == 32000) {
-				/* NewConnectionPort: the first port is the notification port of the client (a receive right of its own that it gives a send right to), the second a task token: the event channel is for the first; wsd gets the
+				/* NewConnectionPort: the first port is the notification port of the client (a receive right of its own that it gives a send right to), the second a task token: the event channel is for the first; WindowServer gets the
 				 * end that it writes to, and what it writes goes to that port (poll_events): the client wakes and pulls the datagrams with GetPortStreamOutofline */
 				if (i == 0) {
 					if (socketpair(1, 5, 0, sv) != 0) return (-1);
@@ -279,11 +279,11 @@ send_complex(int fd)
 		mh.iov = &iov; mh.iovlen = 1; mh.control = ctl; mh.controllen = (16 + 4 * nfds + 7) & ~7u;
 	}
 	n = sendmsg(fd, &mh, 0);
-	for (k = (rq.h.id == 32000 ? 0 : 1); k < nfds; k++) close(fds[k]);			/* the ends that went to wsd */
+	for (k = (rq.h.id == 32000 ? 0 : 1); k < nfds; k++) close(fds[k]);			/* the ends that went to WindowServer */
 	return (n == (long)tail ? 0 : -1);
 }
 
-/* what wsd sent on the event channels: a message of the window server (the events of a client) -> the port of the client */
+/* what WindowServer sent on the event channels: a message of the window server (the events of a client) -> the port of the client */
 static void
 poll_events(void)
 {
@@ -304,7 +304,7 @@ poll_events(void)
 	}
 }
 
-/* a message of a client to wsd and the reply back (the requests that carry rights or memory are not forwarded yet) */
+/* a message of a client to WindowServer and the reply back (the requests that carry rights or memory are not forwarded yet) */
 static void
 forward(const u32 *tr, u32 via_port)
 {
@@ -325,7 +325,7 @@ forward(const u32 *tr, u32 via_port)
 		}
 	} else if (send(fd, &rq.h, rq.h.size, 0) != (long)rq.h.size) goto fail;
 	if (rq.h.remote == 0) {
-		/* no reply port (a routine without a reply, like SetWindowLevel): wsd answers every request anyway, so its answer is read and dropped; left on the socket it would be taken as the answer of the next request */
+		/* no reply port (a routine without a reply, like SetWindowLevel): WindowServer answers every request anyway, so its answer is read and dropped; left on the socket it would be taken as the answer of the next request */
 		(void)get_reply(fd, pid, 0);
 		return;
 	}

@@ -18,12 +18,12 @@ extern int socket(int, int, int);
 extern int connect(int, const void *, unsigned int);
 extern void *signal(int, void *);
 extern int close(int);
-/* the commits also go to wsd (the render server of the window server: src/sls_carender.c) on a stream socket: records u32 type, u32 length, payload (1: a commit message, 2: u32 message number, u32 descriptor and the out-of-line bytes) */
+/* the commits also go to WindowServer (the render server of the window server: src/sls_carender.c) on a stream socket: records u32 type, u32 length, payload (1: a commit message, 2: u32 message number, u32 descriptor and the out-of-line bytes) */
 static int cafd = -1;
 static void ca_connect(void)
 {
 	struct { unsigned char len, family; char path[104]; } sa;
-	const char *p = "/tmp/wsd-ca.sock";
+	const char *p = "/tmp/WindowServer-ca.sock";
 	unsigned k;
 
 	if (cafd >= 0) return;
@@ -46,7 +46,7 @@ static void ca_send(u32 type, const void *a, u32 alen, const void *b, u32 blen)
 		u32 done = 0;
 		while (done < lens[i]) {
 			long w = write(cafd, parts[i] + done, lens[i] - done);
-			if (w <= 0) { close(cafd); cafd = -1; return; }	/* wsd went away: the next commit connects again */
+			if (w <= 0) { close(cafd); cafd = -1; return; }	/* WindowServer went away: the next commit connects again */
 			done += (u32)w;
 		}
 	}
@@ -83,7 +83,7 @@ main(void)
 	u32 port = 0, set = 0, p1 = 0, p2 = 0, i, n;
 	int kr = bootstrap_check_in(bootstrap_port, "com.apple.CARenderServer", &port);
 
-	signal(13, (void *)1);			/* SIGPIPE ignored: wsd may go away */
+	signal(13, (void *)1);			/* SIGPIPE ignored: WindowServer may go away */
 	out("carender-stub: check-in "); hex((u32)kr, 8); out(" port "); hex(port, 8); out("\n");
 	mach_port_allocate(mach_task_self_, 3 /* PORT_SET */, &set);
 	mach_port_insert_member(mach_task_self_, port, set);
@@ -120,7 +120,7 @@ main(void)
 				}
 				nmsg++;
 			}
-			{	/* with the pid of the sender (word 10 of the audit trailer, after the message): wsd keeps a scene and a window for each client */
+			{	/* with the pid of the sender (word 10 of the audit trailer, after the message): WindowServer keeps a scene and a window for each client */
 				u32 tr = (buf[1] + 3) / 4, pid[1];
 
 				pid[0] = tr + 10 < sizeof(buf) / 4 ? buf[tr + 10] : 0;

@@ -20,7 +20,7 @@ After these the Dock stops in an assertion of its own QuartzCore, `(scheduled)` 
 - The stream starts with a header read by `Decoder::Decoder`: `u32` (seed/flags), `u32` context id (must equal the id of the context that was registered, here 1), `u64` timestamp (a double, seconds). Everything is plain little-endian (`decode_int8/16/32/64`, `decode_vm_size_t` = 8 bytes); a read beyond the end is a fatal error of the decoder.
 - Then commands, one byte each (`CmdStreamMsg::run`): 0 end, 1 delete_object (id u64, u32), 2 set_object (id u64, u32, object, u32), 3 update_layer (id u64), 4 add_animation (id u64, animation), 5 remove_all_animations, 6 remove_animation (id, CFString), 7 set_layer_id, 8 (CFDictionary), 9 colorspace, 10 (CFString), more up to the table in `run` (decompile `0x7ff80d2ba4cc` of the extracted QuartzCore, REA snapshot is quick after the first run).
 - The first commit of the Dock is `09 01 24 20 ...` (colorspace first), the second one carries the layer objects (a `Layer` is read by `CA::Render::Layer::Layer(Decoder*)`: not decompiled yet).
-- Next: decompile `decode_colorspace`, `decode_object`, `Layer::Layer(Decoder*)`, write the parser (it only has to build a tree of layers: geometry, background colour, contents as shared memory), hand the tree to wsd/quartzcore.
+- Next: decompile `decode_colorspace`, `decode_object`, `Layer::Layer(Decoder*)`, write the parser (it only has to build a tree of layers: geometry, background colour, contents as shared memory), hand the tree to WindowServer/quartzcore.
 
 ## Parser of the command streams (tools/ca/caparse.py, carender.py)
 
