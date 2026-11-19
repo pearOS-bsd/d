@@ -45,6 +45,8 @@ struct msghdr { void *name; u32 namelen; struct iovec *iov; int iovlen; void *co
 
 static void out(const char *s) { unsigned long n = 0; while (s[n]) n++; write(2, s, n); }
 static void outx(u32 v) { char b[9]; int i; for (i = 7; i >= 0; i--, v >>= 4) b[i] = "0123456789abcdef"[v & 15]; b[8] = 0; out(b); }
+extern unsigned long long mach_absolute_time(void);
+static void tms(void) { out(" t="); outx((u32)(mach_absolute_time() / 1000000)); }      /* the time of a request and of its answer (ms): where the time of a round trip goes */
 static void copy(void *d, const void *s, unsigned long n) { unsigned long i; for (i = 0; i < n; i++) ((char *)d)[i] = ((const char *)s)[i]; }
 
 static union { struct hdr h; char raw[0x12100]; } rq, rp;
@@ -330,7 +332,7 @@ forward(const u32 *tr, u32 via_port)
 		return;
 	}
 	if (get_reply(fd, pid, rq.h.remote) != 0) goto fail;
-	out("wsbridge:   reply id "); outx(rp.h.id); out(" size "); outx(rp.h.size); out(" bits "); outx(rp.h.bits);
+	out("wsbridge:   reply"); tms(); out(" id "); outx(rp.h.id); out(" size "); outx(rp.h.size); out(" bits "); outx(rp.h.bits);
 	if (rp.h.size == 0x24 && !(rp.h.bits & 0x80000000u)) { out(" code "); outx(((u32 *)&rp.h)[8]); }
 	out("\n");
 	mach_msg(&rp.h, MACH_SEND_MSG, rp.h.size, 0, 0, 0, 0);
@@ -369,7 +371,7 @@ main(void)
 			continue;
 		}
 		tr = (const u32 *)(rq.raw + ((rq.h.size + 3) & ~3u));
-		out("wsbridge: id "); outx(rq.h.id); out(" size "); outx(rq.h.size); out(" bits "); outx(rq.h.bits); out(" port "); outx(rq.h.local); out(" from pid "); outx(tr[10]); out("\n");
+		out("wsbridge: id "); outx(rq.h.id); tms(); out(" size "); outx(rq.h.size); out(" bits "); outx(rq.h.bits); out(" port "); outx(rq.h.local); out(" from pid "); outx(tr[10]); out("\n");
 		forward(tr, rq.h.local == port ? 0 : rq.h.local);
 	}
 }

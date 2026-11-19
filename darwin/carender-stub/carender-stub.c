@@ -14,6 +14,7 @@ extern long write(int fd, const void *buf, unsigned long n);
 
 static void out(const char *s) { unsigned long n = 0; while (s[n]) n++; write(2, s, n); }
 extern int open(const char *, int, ...);
+extern char *getenv(const char *);
 extern int socket(int, int, int);
 extern int connect(int, const void *, unsigned int);
 extern void *signal(int, void *);
@@ -89,12 +90,14 @@ main(void)
 	mach_port_insert_member(mach_task_self_, port, set);
 	mach_port_allocate(mach_task_self_, 1, &p1); mach_port_insert_right(mach_task_self_, p1, p1, 20); mach_port_insert_member(mach_task_self_, p1, set);
 	mach_port_allocate(mach_task_self_, 1, &p2); mach_port_insert_right(mach_task_self_, p2, p2, 20); mach_port_insert_member(mach_task_self_, p2, set);
+	/* CARENDER_TRACE=1: every message and its words go to the output, the command streams to /tmp/ca.bin and the out-of-line data to /tmp/ca-ool-*.bin (a debugging aid: on a machine with a small /tmp it fills it in seconds, and the output of every commit is a lot of work) */
+	int trace = getenv("CARENDER_TRACE") != 0;
 	for (;;) {
 		kr = mach_msg(buf, 2 | 0x100000 /* RCV_MSG | RCV_LARGE */ | 0x03000000 /* the audit trailer: who sent it */, 0, sizeof(buf), set, 0, 0);
 		if (kr != 0) { out("carender-stub: receive error "); hex((u32)kr, 8); out("\n"); continue; }
-		out("carender-stub: msg id "); hex(buf[5], 8); out(" size "); hex(buf[1], 8); out(" bits "); hex(buf[0], 8); out(" remote "); hex(buf[2], 8); out(" local "); hex(buf[3], 8); out("\n  ");
+		if (trace) { out("carender-stub: msg id "); hex(buf[5], 8); out(" size "); hex(buf[1], 8); out(" bits "); hex(buf[0], 8); out(" remote "); hex(buf[2], 8); out(" local "); hex(buf[3], 8); out("\n  "); }
 		if (buf[5] >= 0x9c42 && buf[5] <= 0x9c45) {	/* the command streams are kept whole in /tmp/ca.bin: a u32 length, then the message */
-			int cf = open("/tmp/ca.bin", 0x209, 0644);
+			int cf = trace ? open("/tmp/ca.bin", 0x209, 0644) : -1;
 
 			if (cf >= 0) { write(cf, &buf[1], 4); write(cf, buf, buf[1]); close(cf); }
 			if (buf[0] & 0x80000000) {		/* the out-of-line data of the commit (an Image's pixels...): /tmp/ca-ool-<message>-<descriptor>.bin */
@@ -111,7 +114,7 @@ main(void)
 						int of;
 
 						nm[12] = '0' + (nmsg / 10) % 10; nm[13] = '0' + nmsg % 10; nm[15] = '0' + k;
-						of = open(nm, 0x601, 0644);
+						of = trace ? open(nm, 0x601, 0644) : -1;
 						if (of >= 0) { write(of, (void *)ad, sz); close(of); }
 						{ u32 hd[2]; hd[0] = nmsg; hd[1] = k; ca_send(2, hd, 8, (void *)ad, sz); }
 						off += 16;
@@ -128,8 +131,8 @@ main(void)
 			}
 		}
 		n = buf[1] / 4; if (n > 4000) n = 4000;
-		for (i = 6; i < n; i++) { hex(buf[i], 8); out(i % 8 == 5 ? "\n  " : " "); }
-		out("\n");
+		if (trace) { for (i = 6; i < n; i++) { hex(buf[i], 8); out(i % 8 == 5 ? "\n  " : " "); }
+		out("\n"); }
 		{
 			/* the simple answers (found in the code of QuartzCore that sends the request and reads the answer): the id of the request, the size of the answer, the numbers that follow the return code */
 			static const struct { u32 id, size, v[4]; } simple[] = {
