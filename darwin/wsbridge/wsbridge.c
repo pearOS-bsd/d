@@ -61,7 +61,9 @@ static struct { u32 pid; int fd; } clients[64];
 static struct { u32 port; u32 pid; int fd; } pmap[256];
 
 /* the event channels: WindowServer sends events on a socket (the end that this program keeps), and they go as Mach messages to the port that the client gave in its request (a send right that this program holds) */
-static struct { int fd; u32 port; } evch[64];
+static struct { int fd; u32 port; u32 pid; u32 tapport; } evch[64];		/* tapport: the port a client gave to PlaceTap (event taps): WindowServer's tap data goes there as the CGYEventTap message that the client library expects */
+static u32 cur_pid;									/* the client whose request is being forwarded */
+#define WSD_NOTE_TAP_DATA 0x54415044u
 
 static int
 wsd_socket(u32 pid)
@@ -241,12 +243,16 @@ send_complex(int fd)
 					if (socketpair(1, 5, 0, sv) != 0) return (-1);
 					fds[nfds++] = sv[1];
 					for (k = 0; k < 64; k++)
-						if (evch[k].fd == 0) { evch[k].fd = sv[0]; evch[k].port = name; break; }
+						if (evch[k].fd == 0) { evch[k].fd = sv[0]; evch[k].port = name; evch[k].pid = cur_pid; evch[k].tapport = 0; break; }
 					out("wsbridge:   event channel for the notification port "); outx(name); out("\n");
 				}
 				*(u32 *)d = 1;
 				off += 12;
 				continue;
+			}
+			if (rq.h.id == 32028 || rq.h.id == 32029) {			/* PlaceTap: the port of the tap; remembered for the event channel of this client */
+				for (k = 0; k < 64; k++) if (evch[k].fd != 0 && evch[k].pid == cur_pid) evch[k].tapport = name;
+				out("wsbridge:   tap port "); outx(name); out(" of pid "); outx(cur_pid); out("\n");
 			}
 			if (nfds == 0)
 				fds[nfds++] = fd;			/* the first port stands for this connection */
@@ -298,11 +304,22 @@ poll_events(void)
 		while ((n = recv(evch[k].fd, wbuf, sizeof(wbuf), 0x80 /* MSG_DONTWAIT */)) >= 24) {
 			struct hdr *h = (struct hdr *)wbuf;
 
+			if (n >= 0x28 && *(u32 *)(wbuf + 0x20) == WSD_NOTE_TAP_DATA && evch[k].tapport) {		/* tap data: PostEventTapData (CGYEventTap id 1) to the tap port: NDR, type, sequence, proxy id, length, the data stream */
+				static char tb[0x4100]; u32 len = *(u32 *)(wbuf + 0x24), dl = len >= 16 ? *(u32 *)(wbuf + 0x28 + 12) : 0, pad = (dl + 3) & ~3u, i;
+				if (len >= 16 && 16 + dl <= len && dl <= 0x4000) {
+					struct hdr *t = (struct hdr *)tb; for (i = 0; i < 0x30 + pad; i++) tb[i] = 0;
+					t->bits = 0x13; t->size = 0x30 + pad; t->remote = evch[k].tapport; t->local = 0; t->voucher = 0; t->id = 1;
+					for (i = 0; i < 8; i++) tb[0x18 + i] = wbuf[0x18 + i];
+					for (i = 0; i < 16 + dl; i++) tb[0x20 + i] = wbuf[0x28 + i];
+					{ static int tl; int kr = mach_msg(t, MACH_SEND_MSG | 0x80, t->size, 0, 0, 0, 0); if (tl < 20) { tl++; out("wsbridge: tap data to port "); outx(evch[k].tapport); out(" size "); outx(t->size); out(" kr "); outx((u32)kr); out("\n"); } }
+					continue;
+				}
+			}
 			h->bits = (h->bits & 0x80000000u) | 0x13;		/* a copy of the send right that this program holds */
 			h->remote = evch[k].port; h->local = 0; h->voucher = 0;
 			h->size = (u32)n;
 			{ static int logged; int kr = mach_msg(h, MACH_SEND_MSG | 0x80 /* MACH_SEND_TIMEOUT */, (u32)n, 0, 0, 0, 0);
-			  if (logged < 40) { logged++; out("wsbridge: event message id "); outx(h->id); out(" size "); outx((u32)n); out(" to port "); outx(evch[k].port); out(" kr "); outx((u32)kr); out("\n"); } }
+			  if (logged < 5) { logged++; out("wsbridge: event message id "); outx(h->id); out(" size "); outx((u32)n); out(" to port "); outx(evch[k].port); out(" kr "); outx((u32)kr); out("\n"); } }
 		}
 	}
 }
@@ -314,6 +331,8 @@ forward(const u32 *tr, u32 via_port)
 	int fd = -1, i;
 	u32 *w = (u32 *)&rp.h;
 	u32 pid = tr[10];
+
+	cur_pid = pid;
 
 	for (i = 0; via_port != 0 && i < 256; i++)
 		if (pmap[i].port == via_port && pmap[i].fd >= 0) fd = pmap[i].fd;
