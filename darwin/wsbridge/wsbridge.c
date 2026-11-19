@@ -301,7 +301,8 @@ poll_events(void)
 			h->bits = (h->bits & 0x80000000u) | 0x13;		/* a copy of the send right that this program holds */
 			h->remote = evch[k].port; h->local = 0; h->voucher = 0;
 			h->size = (u32)n;
-			mach_msg(h, MACH_SEND_MSG | 0x80 /* MACH_SEND_TIMEOUT */, (u32)n, 0, 0, 0, 0);
+			{ static int logged; int kr = mach_msg(h, MACH_SEND_MSG | 0x80 /* MACH_SEND_TIMEOUT */, (u32)n, 0, 0, 0, 0);
+			  if (logged < 40) { logged++; out("wsbridge: event message id "); outx(h->id); out(" size "); outx((u32)n); out(" to port "); outx(evch[k].port); out(" kr "); outx((u32)kr); out("\n"); } }
 		}
 	}
 }
