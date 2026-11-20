@@ -61,10 +61,10 @@ static void logf_(NSString *s) { fprintf(stderr, "lsd-objc: %s\n", [s UTF8String
 		for (const char *p = sg; *p; p++) { if (*p == '"') { inq = !inq; continue; } if (inq) continue; if (*p == '@') nobj++; else if (*p != 'v' && *p != '?' && *p != 'c') other++; }
 		struct stat stb;
 		if ([sel isEqualToString:@"getServerStoreNonBlockingWithCompletionHandler:"] && (storePath.length == 0 || stat(storePath.fileSystemRepresentation, &stb) != 0 || stb.st_size < 4096)) {
-			/* no store, or one that is not a database (_CSStore initWithContentsOfURL: crashes on an empty file): answer with an error, the client then fails the call instead of waiting for ever */
-			NSError *err = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadNoSuchFileError userInfo:nil];
-			logf_(@"no usable store file: answering with an error");
-			((__bridge void (^)(id, id, id, char, id))blk)(nil, nil, nil, 0, err);
+			/* no store, or one that is not a database (_CSStore initWithContentsOfURL: crashes on an empty file).  An error in the reply makes the client wait in its file cache lock for ever (the app
+			 * hangs in NSApplication init); a connection that is invalidated gives the client "Connection invalid" and it goes on without LaunchServices data.  Until we write csstore files of our own. */
+			logf_(@"no usable store file: exiting (the client sees the connection die)");
+			_exit(1);
 		} else if ([sel isEqualToString:@"getServerStoreNonBlockingWithCompletionHandler:"] && storePath.length > 0) {
 			Class FSNode = NSClassFromString(@"FSNode");
 			NSError *e = nil;
