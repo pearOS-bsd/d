@@ -3,6 +3,7 @@
  * Built on a Mac with the Xcode tools (clang -fobjc-arc -framework Foundation lsd.m), run on pearOS where the libraries come from the cache.
  * Environment: LSD_STORE = the csstore file that the clients map (a database that was made by a Mac for the same applications). */
 #import <Foundation/Foundation.h>
+#include <sys/stat.h>
 #import <CoreServices/CoreServices.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
@@ -58,7 +59,13 @@ static void logf_(NSString *s) { fprintf(stderr, "lsd-objc: %s\n", [s UTF8String
 
 		sg += 0;
 		for (const char *p = sg; *p; p++) { if (*p == '"') { inq = !inq; continue; } if (inq) continue; if (*p == '@') nobj++; else if (*p != 'v' && *p != '?' && *p != 'c') other++; }
-		if ([sel isEqualToString:@"getServerStoreNonBlockingWithCompletionHandler:"] && storePath.length > 0) {
+		struct stat stb;
+		if ([sel isEqualToString:@"getServerStoreNonBlockingWithCompletionHandler:"] && (storePath.length == 0 || stat(storePath.fileSystemRepresentation, &stb) != 0 || stb.st_size < 4096)) {
+			/* no store, or one that is not a database (_CSStore initWithContentsOfURL: crashes on an empty file): answer with an error, the client then fails the call instead of waiting for ever */
+			NSError *err = [NSError errorWithDomain:NSCocoaErrorDomain code:NSFileReadNoSuchFileError userInfo:nil];
+			logf_(@"no usable store file: answering with an error");
+			((__bridge void (^)(id, id, id, char, id))blk)(nil, nil, nil, 0, err);
+		} else if ([sel isEqualToString:@"getServerStoreNonBlockingWithCompletionHandler:"] && storePath.length > 0) {
 			Class FSNode = NSClassFromString(@"FSNode");
 			NSError *e = nil;
 			id node = [FSNode alloc];
