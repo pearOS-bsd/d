@@ -56,7 +56,8 @@ static unsigned long oolpos;
 static u32 set;
 
 /* one socket to WindowServer for each client process (the window server counts a connection for each client) */
-static struct { u32 pid; int fd; } clients[64];
+static struct { u32 pid; int fd; int shaken; } clients[64];		/* shaken: NewConnectionPort went over this socket (WindowServer refuses a second one on it) */
+static int reply_conn_fd = -1;						/* the socket of a connection that is being made: the connection port of the reply stands for it */
 /* the ports that this program made for ports of WindowServer's replies: the port, the client that got it, and the descriptor that stands for it at WindowServer (-1: none, the socket of the client) */
 static struct { u32 port; u32 pid; int fd; } pmap[256];
 
@@ -92,6 +93,25 @@ wsd_socket(u32 pid)
 
 		send(fd, hello, 28, 0);
 	}
+	return (fd);
+}
+
+/* a socket of its own for one more connection of the same client (SkyLight makes several: SLSMainConnection of a thread, ...); not in the table of the clients, only the connection port of its reply refers to it */
+static int
+wsd_socket_new(u32 pid)
+{
+	int fd;
+	struct { unsigned char len, family; char path[104]; } sa;
+	const char *p = getenv("WS_SOCKET");
+	unsigned k;
+
+	if (p == 0) p = "/tmp/WindowServer.sock";
+	for (k = 0; k < sizeof(sa); k++) ((char *)&sa)[k] = 0;
+	for (k = 0; p[k] && k < 103; k++) sa.path[k] = p[k];
+	sa.len = sizeof(sa); sa.family = 1;
+	fd = socket(1, 5, 0);
+	if (fd < 0 || connect(fd, &sa, sizeof(sa)) != 0) { if (fd >= 0) close(fd); return (-1); }
+	{ u32 hello[7] = { 0, 28, 0, 0, 0, 0x50494400, pid }; send(fd, hello, 28, 0); }
 	return (fd);
 }
 
@@ -184,7 +204,7 @@ get_reply(int fd, u32 pid, u32 reply_remote)
 					}
 					out("wsbridge:   no memory entry for the descriptor\n");
 				}
-				np = new_port(pid, pfd);
+				np = new_port(pid, (rp.h.id == 0x7d64 && i == 0 && reply_conn_fd >= 0) ? reply_conn_fd : pfd);
 				*(u32 *)d = np;
 				d[10] = 20;				/* MAKE_SEND: from the receive right that this program keeps */
 				out("wsbridge:   port descriptor "); outx(name); out(" -> port "); outx(np); out(pfd >= 0 ? " (with a descriptor)\n" : " (a name)\n");
@@ -336,10 +356,18 @@ forward(const u32 *tr, u32 via_port)
 
 	for (i = 0; via_port != 0 && i < 256; i++)
 		if (pmap[i].port == via_port && pmap[i].fd >= 0) fd = pmap[i].fd;
+	reply_conn_fd = -1;
+	if (fd < 0 && rq.h.id == 32000) {					/* a connection of the client that already has one: a socket of its own */
+		for (i = 0; i < 64; i++)
+			if (clients[i].fd != 0 && clients[i].pid == pid && clients[i].shaken) { fd = wsd_socket_new(pid); reply_conn_fd = fd; out("wsbridge:   one more connection of pid "); outx(pid); out(": a socket of its own\n"); break; }
+	}
 	if (fd < 0)
 		fd = wsd_socket(pid);
 	if (fd < 0)
 		goto fail;
+	if (rq.h.id == 32000 && reply_conn_fd < 0)
+		for (i = 0; i < 64; i++)
+			if (clients[i].fd == fd) clients[i].shaken = 1;
 	if (rq.h.bits & 0x80000000u) {
 		if (send_complex(fd) != 0) {
 			out("wsbridge:   complex request: not forwarded\n");

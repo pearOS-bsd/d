@@ -216,8 +216,12 @@ handle(xpc_object_t peer, xpc_object_t m, int nsxpc, const char *svc)
 			xpc_object_t keys = xpc_dictionary_get_value(m, "restrictto");
 			xpc_object_t res = xpc_dictionary_create(0, 0, 0);
 
-			if (keys && xpc_array_get_count(keys) > 0)
-				xpc_dictionary_set_value(res, xpc_string_get_string_ptr(xpc_array_get_value(keys, 0)), xpc_string_create("com.apple.dock"));
+			if (keys && xpc_array_get_count(keys) > 0) {
+				const char *k0 = xpc_string_get_string_ptr(xpc_array_get_value(keys, 0));
+
+				/* ApplicationType is one of "Foreground", "BackgroundOnly", "UIElement" (a value that is none of them makes the caller ask again: 338 requests in 100 s from a SwiftUI app); every other key answers the bundle identifier */
+				xpc_dictionary_set_value(res, k0, xpc_string_create(streq(k0, "ApplicationType") ? "Foreground" : "com.apple.dock"));
+			}
 			xpc_dictionary_set_value(r, "result", res);
 			xpc_dictionary_set_bool(r, "cacheable", 0);
 			xpc_dictionary_set_bool(r, "success", 1);
