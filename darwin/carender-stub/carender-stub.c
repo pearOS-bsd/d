@@ -101,7 +101,7 @@ send_registered(u32 port)
 static unsigned long long fence_ids[16];
 static unsigned long long fence_names[64];
 static unsigned long long pend[16][8], reply_names[8];		/* the names of the fences of every transaction that was applied and whose observer port has not come back with a commit yet (first in, first out) */
-static u32 pendn[16], npend, pendhead;
+static u32 pendn[16], pendp[16], npend, pendhead;
 
 
 static int
@@ -226,9 +226,11 @@ main(void)
 				u32 cnt = nm;
 				int k1, k2;
 
-				if (npend > 0) { ids = pend[pendhead]; cnt = pendn[pendhead]; pendhead = (pendhead + 1) % 16; npend--; }
+				u32 pp = 0;
+
+				if (npend > 0) { ids = pend[pendhead]; cnt = pendn[pendhead]; pp = pendp[pendhead]; pendhead = (pendhead + 1) % 16; npend--; }
 				if (cnt == 0) continue;
-				k1 = send_fence_msg(obs[k], 0x726d6663, ids, cnt); k2 = send_fence_msg(obs[k], 0x726c6667, ids, cnt);
+				k1 = 0; k2 = send_fence_msg(pp ? pp : obs[k], 0x726c6667, ids, cnt);
 				out("carender-stub: fence messages sent to "); hex(obs[k], 8); out(" names "); hex(cnt, 1); out(" kr "); hex((u32)k1, 8); out(" "); hex((u32)k2, 8); out("\n");
 			}
 			for (k = 0; k < nobs; k++) { out("carender-stub: port of a commit released "); hex(obs[k], 8); out("\n"); mach_port_destroy(mach_task_self_, obs[k]); }
@@ -244,10 +246,11 @@ main(void)
 				u32 n;
 				for (n = 0; n < nfence; n++) if (fences[n] == pl[q] && fences[n] != 0) { slot[nn++] = fence_names[n]; break; }
 			}
-			if (slot != reply_names) pendn[(pendhead + npend++) % 16] = nn;
+			if (slot != reply_names) { pendp[(pendhead + npend) % 16] = 0; pendn[(pendhead + npend++) % 16] = nn; }
 			for (q = 0; q < nn; q++) reply_names[q] = slot[q];
 			mach_port_allocate(mach_task_self_, 1, &op);
 			mach_port_insert_right(mach_task_self_, op, op, 20);
+			mach_port_insert_right(mach_task_self_, op, op, 20);		/* a second send right: the stub keeps it to write to the observer, the first one is moved to the client */
 			for (i = 0; i < 28; i++) am[i] = 0;
 			am[0] = 0x80000012; am[1] = 0x70; am[2] = buf[2]; am[5] = 0x9d11 + 100; am[6] = 4;
 			*(unsigned long *)&am[7] = (unsigned long)reply_names; am[9] = 0x01000100; am[10] = nn * 8;	/* the names of the fences of the transaction (not deallocated: the memory is ours) */
@@ -257,6 +260,12 @@ main(void)
 			am[22] = 1;						/* NDR */
 			mach_msg(am, 1, 0x70, 0, 0, 0, 0);
 			out("carender-stub: answered the fence transaction, observer port "); hex(op, 8); out("\n");
+			if (nn > 0) {		/* the real server resolves a transaction without a wait at once: 'cfmr' goes to the observer right after the answer (seen on the Mac: the deferred commits 40005 follow the answer of 40209 with no commit between) */
+				int k1 = send_fence_msg(op, 0x726d6663, reply_names, nn);
+
+				out("carender-stub: cfmr sent, kr "); hex((u32)k1, 8); out("\n");
+				if (npend > 0) pendp[(pendhead + npend - 1) % 16] = op;
+			}
 		}
 		if (buf[5] == 0x9d10 && buf[2] != 0) {			/* CASCreateFencePort: the answer carries a send right to a new port (a fence: nothing waits on it here) */
 			u32 fp = 0, fm[16];
