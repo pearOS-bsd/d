@@ -16,6 +16,8 @@ extern void xpc_release(xpc_object_t o);
 extern void xpc_dictionary_set_string(xpc_object_t d, const char *k, const char *v);
 extern void xpc_connection_send_message(xpc_object_t c, xpc_object_t m);
 extern xpc_object_t xpc_dictionary_create_reply(xpc_object_t m);
+extern xpc_object_t xpc_bool_create(int v);
+extern xpc_object_t xpc_uint64_create(unsigned long v);
 extern long xpc_dictionary_get_int64(xpc_object_t d, const char *k);
 extern unsigned long xpc_dictionary_get_uint64(xpc_object_t d, const char *k);
 extern void xpc_dictionary_set_uint64(xpc_object_t d, const char *k, unsigned long v);
@@ -220,7 +222,14 @@ handle(xpc_object_t peer, xpc_object_t m, int nsxpc, const char *svc)
 				const char *k0 = xpc_string_get_string_ptr(xpc_array_get_value(keys, 0));
 
 				/* ApplicationType is one of "Foreground", "BackgroundOnly", "UIElement" (a value that is none of them makes the caller ask again: 338 requests in 100 s from a SwiftUI app); every other key answers the bundle identifier */
-				xpc_dictionary_set_value(res, k0, xpc_string_create(streq(k0, "ApplicationType") ? "Foreground" : "com.apple.dock"));
+				xpc_object_t val;
+
+				if (streq(k0, "ApplicationType")) val = xpc_string_create("Foreground");
+				else if (streq(k0, "Hidden") || streq(k0, "LSLaunchedHidden") || streq(k0, "LSWantsAppDiedMessages")) val = xpc_bool_create(0);	/* booleans: a string here read as true made AppKit keep every window unordered (the app thought it was launched hidden) */
+				else if (streq(k0, "LSLaunchedByLaunchServices")) val = xpc_bool_create(1);
+				else if (streq(k0, "LSASN")) val = xpc_uint64_create(xpc_dictionary_get_uint64(m, "asn"));
+				else val = xpc_string_create("com.apple.dock");
+				xpc_dictionary_set_value(res, k0, val);
 			}
 			xpc_dictionary_set_value(r, "result", res);
 			xpc_dictionary_set_bool(r, "cacheable", 0);
