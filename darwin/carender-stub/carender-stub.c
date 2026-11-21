@@ -69,7 +69,7 @@ answer_register(u32 *buf, u32 p1, u32 p2, u32 n1, u32 n2, u32 last)
 	rep[0] = 0x80000012; rep[1] = 0x50; rep[2] = buf[2]; rep[5] = 0x9d6e;
 	rep[6] = 2;
 	rep[7] = p1; rep[8] = 0; rep[9] = 0x00130000;			/* the descriptors: a send right each (copied) */
-	rep[10] = p2; rep[11] = 0; rep[12] = 0x00130000;
+	rep[10] = p2; rep[11] = 0; rep[12] = 0x00110000;		/* __XRegisterClient: the first descriptor is a copy of the send right of the server (0x13), the second a MOVE_SEND of a new port of this client (0x11) */
 	rep[15] = n1; rep[16] = n2;					/* after the NDR (words 13, 14): the two numbers */
 	rep[17] = 0; rep[18] = 0;					/* offset, count of the array: empty */
 	rep[19] = last;
@@ -242,7 +242,7 @@ main(void)
 			u32 *pl = (u32 *)*(unsigned long *)&buf[7];
 			unsigned long long *slot = npend < 16 ? pend[(pendhead + npend) % 16] : reply_names;
 
-			if (buf[6] >= 1 && pl != 0) for (q = 0; q < pc && nn < 8; q++) {
+			if (buf[6] >= 1 && pl != 0) for (q = 0; q < pc && q < buf[17] && nn < 8; q++) {
 				u32 n;
 				for (n = 0; n < nfence; n++) if (fences[n] == pl[q] && fences[n] != 0) { slot[nn++] = fence_names[n]; break; }
 			}
@@ -254,9 +254,16 @@ main(void)
 			for (i = 0; i < 28; i++) am[i] = 0;
 			am[0] = 0x80000012; am[1] = 0x70; am[2] = buf[2]; am[5] = 0x9d11 + 100; am[6] = 4;
 			*(unsigned long *)&am[7] = (unsigned long)reply_names; am[9] = 0x01000100; am[10] = nn * 8;	/* the names of the fences of the transaction (not deallocated: the memory is ours) */
-			am[13] = 0x01000101;
+			{	/* the u32 array of the answer: the ids of the contexts, grouped per fence and ended by 0, then those of the batch (the request has them in the same shape: echoed) */
+				static u32 idecho[64];
+				u32 *src = (u32 *)*(unsigned long *)&buf[11], cnt = buf[19] < 64 ? buf[19] : 64, z;
+
+				if (buf[6] >= 2 && src != 0) for (z = 0; z < cnt; z++) idecho[z] = src[z]; else cnt = 0;
+				*(unsigned long *)&am[11] = (unsigned long)idecho; am[13] = 0x01000100; am[14] = cnt * 4; am[24] = cnt;
+			}
+			am[23] = nn;						/* the count of the names, again as a number (0x5c: __XApplyFenceTransaction writes the count of the array there, the client reads it) */
 			am[15] = op; am[17] = 0x00100000;			/* MOVE_RECEIVE */
-			am[18] = op; am[20] = 0x00110000;			/* MOVE_SEND */
+			am[18] = 0; am[20] = 0x00110000;			/* the batch port: none (no batch: the transaction has only fences) */
 			am[22] = 1;						/* NDR */
 			mach_msg(am, 1, 0x70, 0, 0, 0, 0);
 			out("carender-stub: answered the fence transaction, observer port "); hex(op, 8); out("\n");
@@ -286,7 +293,14 @@ main(void)
 			static u32 client_id = 1;		/* the two numbers of the answer: the id of the client; the commits of its contexts carry it and SetWindowLayerContext names it (they were always 1: every client looked the same) */
 
 			client_id++;
-			answer_register(buf, p1, p2, client_id, client_id, 0);
+			{
+				u32 cp = 0;
+
+				mach_port_allocate(mach_task_self_, 1, &cp);
+				mach_port_insert_right(mach_task_self_, cp, cp, 20);
+				mach_port_insert_member(mach_task_self_, cp, set);	/* the commands of this client (40004 / 40005 ...) arrive on its own port */
+				answer_register(buf, p1, cp, client_id, client_id, 0);
+			}
 			if (buf[0] & 0x80000000) { send_registered(buf[7]); send_registered(buf[10]); }
 			out("carender-stub: answered the register, client "); hex(client_id, 8); out("\n");
 		}
