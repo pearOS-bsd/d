@@ -76,6 +76,34 @@ static const unsigned char rbs_error[492] = {0x62,0x70,0x6c,0x69,0x73,0x74,0x30,
 
 static unsigned long front_pid;
 
+/* the application records of the daemon (found with a program on the Mac: SwiftUI/docs/EVIDENCE.md): the check-in (500) stores the information of the application, 450 replaces keys of it
+ * (TransformProcessType / -[NSApplication setActivationPolicy:] sends the whole record with "ApplicationType" = "Foreground"), 360 reads keys (restrictto) or the whole record, 130 compares two ASNs */
+static struct { unsigned long pid; xpc_object_t rec; } recs[64];
+
+static xpc_object_t
+rec_by_asn(unsigned long asn)
+{
+	unsigned long lo = asn & 0xffffffffUL, pid = lo >= 100000 ? lo - 100000 : lo;
+	int i;
+
+	for (i = 0; i < 64; i++)
+		if (recs[i].rec != 0 && recs[i].pid == pid) return (recs[i].rec);
+	return (0);
+}
+
+static void
+rec_store(unsigned long pid, xpc_object_t rec)
+{
+	int i, free_i = -1;
+
+	for (i = 0; i < 64; i++) {
+		if (recs[i].rec != 0 && recs[i].pid == pid) { recs[i].rec = rec; return; }
+		if (recs[i].rec == 0 && free_i < 0) free_i = i;
+	}
+	if (free_i < 0) free_i = 0;
+	recs[free_i].pid = pid; recs[free_i].rec = rec;
+}
+
 static void
 handle(xpc_object_t peer, xpc_object_t m, int nsxpc, const char *svc)
 {
@@ -223,28 +251,52 @@ handle(xpc_object_t peer, xpc_object_t m, int nsxpc, const char *svc)
 			xpc_dictionary_set_value(r, "metainfo", meta);
 			xpc_dictionary_set_bool(r, "success", 1);
 		} else if (cmd == 300) {			/* the front application (_LSCopyFrontApplication when the shared page has none): the ASN as a number: 1 << 32 | the low part (100000 + pid, what the check-in below gives); the application that checked in last is in front */
-			if (front_pid != 0) xpc_dictionary_set_uint64(r, "asn", (1UL << 32) | (100000UL + front_pid));
-			xpc_dictionary_set_bool(r, "success", front_pid != 0);
-		} else if (cmd == 360) {			/* the value of a key for an application (here: the Dock; every key answers its bundle identifier) */
+			/* the Mac answers "success": false while nothing is in front (checked for the first program of a run): TransformProcessType then takes the path of an application that is not in front (no 320) and sends 450 */
+			xpc_dictionary_set_bool(r, "success", 0);
+		} else if (cmd == 360) {			/* the value of keys for an application (restrictto: the keys, none: the whole record); an application that did not check in: "success": false */
 			xpc_object_t keys = xpc_dictionary_get_value(m, "restrictto");
+			xpc_object_t rec = rec_by_asn(xpc_dictionary_get_uint64(m, "asn"));
 			xpc_object_t res = xpc_dictionary_create(0, 0, 0);
 
-			if (keys && xpc_array_get_count(keys) > 0) {
-				const char *k0 = xpc_string_get_string_ptr(xpc_array_get_value(keys, 0));
+			if (rec == 0) {
+				xpc_dictionary_set_bool(r, "success", 0);
+			} else {
+				if (keys && xpc_array_get_count(keys) > 0) {
+					unsigned long ki;
 
-				/* ApplicationType is one of "Foreground", "BackgroundOnly", "UIElement" (a value that is none of them makes the caller ask again: 338 requests in 100 s from a SwiftUI app); every other key answers the bundle identifier */
-				xpc_object_t val;
+					for (ki = 0; ki < xpc_array_get_count(keys); ki++) {
+						const char *k = xpc_string_get_string_ptr(xpc_array_get_value(keys, ki));
+						xpc_object_t v = k ? xpc_dictionary_get_value(rec, k) : 0;
 
-				if (streq(k0, "ApplicationType")) val = xpc_string_create("Foreground");
-				else if (streq(k0, "Hidden") || streq(k0, "LSLaunchedHidden") || streq(k0, "LSWantsAppDiedMessages")) val = xpc_bool_create(0);	/* booleans: a string here read as true made AppKit keep every window unordered (the app thought it was launched hidden) */
-				else if (streq(k0, "LSLaunchedByLaunchServices")) val = xpc_bool_create(1);
-				else if (streq(k0, "LSASN")) val = xpc_uint64_create(xpc_dictionary_get_uint64(m, "asn"));
-				else val = xpc_string_create("com.apple.dock");
-				xpc_dictionary_set_value(res, k0, val);
+						if (v) xpc_dictionary_set_value(res, k, v);
+					}
+				} else
+					res = xpc_copy(rec);
+				xpc_dictionary_set_value(r, "result", res);
+				xpc_dictionary_set_bool(r, "cacheable", keys == 0);
+				xpc_dictionary_set_bool(r, "success", 1);
 			}
-			xpc_dictionary_set_value(r, "result", res);
-			xpc_dictionary_set_bool(r, "cacheable", 0);
-			xpc_dictionary_set_bool(r, "success", 1);
+		} else if (cmd == 510) {			/* set keys of the record of an application (TransformProcessType sends {"ApplicationType": "Foreground"}); the answer is the whole record */
+			xpc_object_t data = xpc_dictionary_get_value(m, "info");
+			xpc_object_t rec = rec_by_asn(xpc_dictionary_get_uint64(m, "asn"));
+
+			if (rec != 0) {
+				if (data != 0) xpc_dictionary_apply(data, ^_Bool(const char *k, xpc_object_t v) { xpc_dictionary_set_value(rec, k, v); return (1); });
+				xpc_dictionary_set_int64(rec, "ChangeCount", xpc_dictionary_get_int64(rec, "ChangeCount") + 2);
+				xpc_dictionary_set_value(r, "info", xpc_copy(rec));
+			}
+			xpc_dictionary_set_bool(r, "success", rec != 0);
+		} else if (cmd == 450) {			/* the application sets keys of its own record (the new ChangeCount goes with them) */
+			xpc_object_t data = xpc_dictionary_get_value(m, "data");
+			xpc_object_t rec = rec_by_asn(xpc_dictionary_get_uint64(m, "asn"));
+
+			if (rec != 0 && data != 0) {
+				xpc_dictionary_apply(data, ^_Bool(const char *k, xpc_object_t v) { xpc_dictionary_set_value(rec, k, v); return (1); });
+				xpc_dictionary_set_int64(rec, "ChangeCount", xpc_dictionary_get_int64(rec, "ChangeCount") + 2);
+			}
+			xpc_dictionary_set_bool(r, "success", rec != 0);
+		} else if (cmd == 130) {			/* two ASNs: the same? */
+			xpc_dictionary_set_bool(r, "success", xpc_dictionary_get_uint64(m, "asn1") == xpc_dictionary_get_uint64(m, "asn2"));
 		} else if (cmd == 410) {			/* the registration of a listener for the notifications about applications: an id, the applications that it was asked for, the session */
 			xpc_object_t add = xpc_dictionary_get_value(m, "addasn");
 			xpc_object_t aff = xpc_array_create(0, 0);
@@ -286,6 +338,8 @@ handle(xpc_object_t peer, xpc_object_t m, int nsxpc, const char *svc)
 			xpc_dictionary_set_value(res, "LSASN", asn);
 			xpc_dictionary_set_bool(res, "LSApplicationHasRegistered", 1);
 			xpc_dictionary_set_int64(res, "ChangeCount", 1);
+			if (xpc_dictionary_get_value(res, "ApplicationType") == 0) xpc_dictionary_set_value(res, "ApplicationType", xpc_string_create("Foreground"));	/* an application whose information has none: the bundles of the lab programs */
+			rec_store((unsigned long)xpc_connection_get_pid(peer), xpc_copy(res));
 			xpc_dictionary_set_value(r, "result", res);
 			xpc_dictionary_set_bool(r, "success", 1);
 		} else if (cmd == 505) {
