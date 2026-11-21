@@ -118,6 +118,28 @@ send_fence_msg(u32 port, u32 id, unsigned long long *ids, u32 nids)
 	return mach_msg(m, 1 | 0x80, m[1], 0, 0, 100, 0);
 }
 
+/* 'gflr' as the Mac's client receives it (captured with SwiftUI/tools/msgtrace.c, dispatch_mach_msg_get_msg): complex, size 0x48, two descriptors: the out-of-line names (u64) and a MOVE_SEND port (a fence port for the deferred commits),
+ * a u64 at 0x38 and the time (a double, seconds of the host clock) at 0x40.  It is this message, not 'cfmr', that makes the client send its deferred commits (40005 / 40004). */
+static int
+send_gflr(u32 port, unsigned long long *ids, u32 nids)
+{
+	u32 m[18], fp = 0;
+	static double t0;
+	int i;
+	double now;
+
+	if (t0 == 0) t0 = 100000.0 - (double)time(0);
+	now = t0 + (double)time(0);
+	for (i = 0; i < 18; i++) m[i] = 0;
+	mach_port_allocate(mach_task_self_, 1, &fp);
+	mach_port_insert_right(mach_task_self_, fp, fp, 20);
+	m[0] = 0x80000013; m[1] = 72; m[2] = port; m[5] = 0x726c6667; m[6] = 2;
+	*(unsigned long *)&m[7] = (unsigned long)ids; m[9] = 0x01000100; m[10] = nids * 8;
+	m[11] = fp; m[13] = 0x00110000;
+	*(double *)&m[16] = now;
+	return mach_msg(m, 1 | 0x80, 72, 0, 0, 100, 0);
+}
+
 /* 'cfmr' goes out about 0.5 s after the answer of ApplyFenceTransaction on the Mac (ftimeout_callback of the server, armed in applyTransaction); sent at once the client has no deferred commit yet and ignores it */
 static struct { u32 port, n; unsigned long long ids[8]; long due; } delayq[16];
 static u32 ndelay;
@@ -131,9 +153,9 @@ flush_delayed(void)
 	for (i = 0; i < ndelay; ) {
 		if (delayq[i].due > now) { i++; continue; }
 		{
-			int k1 = send_fence_msg(delayq[i].port, 0x726d6663, delayq[i].ids, delayq[i].n);
+			int k1 = send_gflr(delayq[i].port, delayq[i].ids, delayq[i].n);
 
-			out("carender-stub: cfmr sent, kr "); hex((u32)k1, 8); out("\n");
+			out("carender-stub: gflr sent, kr "); hex((u32)k1, 8); out("\n");
 		}
 		for (j = i + 1; j < ndelay; j++) delayq[j - 1] = delayq[j];
 		ndelay--;
@@ -255,7 +277,7 @@ main(void)
 
 				if (npend > 0) { ids = pend[pendhead]; cnt = pendn[pendhead]; pp = pendp[pendhead]; pendhead = (pendhead + 1) % 16; npend--; }
 				if (cnt == 0) continue;
-				k1 = 0; k2 = send_fence_msg(pp ? pp : obs[k], 0x726c6667, ids, cnt);
+				k1 = 0; k2 = 0; (void)pp;
 				out("carender-stub: fence messages sent to "); hex(obs[k], 8); out(" names "); hex(cnt, 1); out(" kr "); hex((u32)k1, 8); out(" "); hex((u32)k2, 8); out("\n");
 			}
 			for (k = 0; k < nobs; k++) { out("carender-stub: port of a commit released "); hex(obs[k], 8); out("\n"); mach_port_destroy(mach_task_self_, obs[k]); }
