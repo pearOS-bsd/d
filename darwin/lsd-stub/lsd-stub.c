@@ -112,6 +112,11 @@ handle(xpc_object_t peer, xpc_object_t m, int nsxpc, const char *svc)
 
 	out("lsd-stub: message ("); out(svc); out("): "); out(d); out("\n");
 	free(d);
+	if (streq(svc, "com.apple.talagent") && xpc_get_type(m) == (void *)&_xpc_type_dictionary) {
+		/* talagent does not run in the session of an ssh login on the Mac: the look-up fails there at once and AppKit then has no persistent-UI manager (NSPersistentUIManager sharedManager is nil).  An answer makes AppKit wait for the end of the restoring of windows, and until then it orders windows without animation and without a transaction.  The connection is cancelled: the caller gets an error at once. */
+		xpc_connection_cancel(peer);
+		return;
+	}
 	if (xpc_get_type(m) == (void *)&_xpc_type_dictionary && xpc_dictionary_get_value(m, "replysig")) {
 		xpc_object_t nr;
 
