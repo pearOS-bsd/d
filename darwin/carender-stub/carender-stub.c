@@ -5,6 +5,7 @@ typedef unsigned long u64;
 extern u32 bootstrap_port;
 extern int bootstrap_check_in(u32 bp, const char *name, u32 *port);
 extern int getpid(void);
+extern long time(long *t);
 extern int mach_msg(void *msg, int opt, u32 ssz, u32 rsz, u32 rname, u32 to, u32 notify);
 extern int mach_port_allocate(u32 task, u32 right, u32 *name);
 extern int mach_port_insert_right(u32 task, u32 name, u32 poly, u32 how);
@@ -113,8 +114,30 @@ send_fence_msg(u32 port, u32 id, unsigned long long *ids, u32 nids)
 	for (i = 0; i < 18; i++) m[i] = 0;
 	m[0] = 0x80000013; m[1] = id == 0x726d6663 ? 52 : 72; m[2] = port; m[5] = id;
 	m[6] = 1; *(unsigned long *)&m[7] = (unsigned long)ids; m[9] = 0x01000100; m[10] = nids * 8;
-	if (id == 0x726d6663) m[11] = getpid();			/* the pid of the server, at 0x2c (send_rmfc_msg) */
+	if (id == 0x726d6663) m[11] = 0;			/* the pid of the server at 0x2c (send_rmfc_msg); 0 and 0 match every deferred commit in CA::Context::send_deferrals */
 	return mach_msg(m, 1 | 0x80, m[1], 0, 0, 100, 0);
+}
+
+/* 'cfmr' goes out about 0.5 s after the answer of ApplyFenceTransaction on the Mac (ftimeout_callback of the server, armed in applyTransaction); sent at once the client has no deferred commit yet and ignores it */
+static struct { u32 port, n; unsigned long long ids[8]; long due; } delayq[16];
+static u32 ndelay;
+
+static void
+flush_delayed(void)
+{
+	u32 i, j;
+	long now = time(0);
+
+	for (i = 0; i < ndelay; ) {
+		if (delayq[i].due > now) { i++; continue; }
+		{
+			int k1 = send_fence_msg(delayq[i].port, 0x726d6663, delayq[i].ids, delayq[i].n);
+
+			out("carender-stub: cfmr sent, kr "); hex((u32)k1, 8); out("\n");
+		}
+		for (j = i + 1; j < ndelay; j++) delayq[j - 1] = delayq[j];
+		ndelay--;
+	}
 }
 
 static u32 fences[64], nfence;
@@ -135,7 +158,9 @@ main(void)
 	/* CARENDER_TRACE=1: every message and its words go to the output, the command streams to /tmp/ca.bin and the out-of-line data to /tmp/ca-ool-*.bin (a debugging aid: on a machine with a small /tmp it fills it in seconds, and the output of every commit is a lot of work) */
 	int trace = getenv("CARENDER_TRACE") != 0;
 	for (;;) {
-		kr = mach_msg(buf, 2 | 0x100000 /* RCV_MSG | RCV_LARGE */ | 0x03000000 /* the audit trailer: who sent it */, 0, sizeof(buf), set, 0, 0);
+		kr = mach_msg(buf, 2 | (ndelay ? 0x100 : 0) | 0x100000 /* RCV_MSG | RCV_TIMEOUT (while a cfmr is waiting) | RCV_LARGE */ | 0x03000000 /* the audit trailer: who sent it */, 0, sizeof(buf), set, ndelay ? 200 : 0, 0);
+		flush_delayed();
+		if (kr == 0x10004003) continue;
 		if (kr != 0) { out("carender-stub: receive error "); hex((u32)kr, 8); out("\n"); continue; }
 		if (trace) { out("carender-stub: msg id "); hex(buf[5], 8); out(" size "); hex(buf[1], 8); out(" bits "); hex(buf[0], 8); out(" remote "); hex(buf[2], 8); out(" local "); hex(buf[3], 8); out("\n  "); }
 		if (buf[5] >= 0x9c42 && buf[5] <= 0x9c45) {	/* the command streams are kept whole in /tmp/ca.bin: a u32 length, then the message */
@@ -267,10 +292,12 @@ main(void)
 			am[22] = 1;						/* NDR */
 			mach_msg(am, 1, 0x70, 0, 0, 0, 0);
 			out("carender-stub: answered the fence transaction, observer port "); hex(op, 8); out("\n");
-			if (nn > 0) {		/* the real server resolves a transaction without a wait at once: 'cfmr' goes to the observer right after the answer (seen on the Mac: the deferred commits 40005 follow the answer of 40209 with no commit between) */
-				int k1 = send_fence_msg(op, 0x726d6663, reply_names, nn);
+			if (nn > 0 && ndelay < 16) {		/* cfmr later (see flush_delayed) */
+				u32 z;
 
-				out("carender-stub: cfmr sent, kr "); hex((u32)k1, 8); out("\n");
+				delayq[ndelay].port = op; delayq[ndelay].n = nn; delayq[ndelay].due = time(0) + 1;
+				for (z = 0; z < nn; z++) delayq[ndelay].ids[z] = reply_names[z];
+				ndelay++;
 				if (npend > 0) pendp[(pendhead + npend - 1) % 16] = op;
 			}
 		}
