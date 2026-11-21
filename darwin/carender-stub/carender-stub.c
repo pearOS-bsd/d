@@ -317,7 +317,7 @@ main(void)
 			if (nn > 0 && ndelay < 16) {		/* cfmr later (see flush_delayed) */
 				u32 z;
 
-				delayq[ndelay].port = op; delayq[ndelay].n = nn; delayq[ndelay].due = time(0) + 1;
+				delayq[ndelay].port = op; delayq[ndelay].n = nn; delayq[ndelay].due = time(0);
 				for (z = 0; z < nn; z++) delayq[ndelay].ids[z] = reply_names[z];
 				ndelay++;
 				if (npend > 0) pendp[(pendhead + npend - 1) % 16] = op;
