@@ -94,6 +94,23 @@ send_registered(u32 port)
 	out("carender-stub: sent the three notifications to port "); hex(port, 8); out("\n");
 }
 
+/* The messages of the real render server to the fence observer port of a client (CA::Render::Fence::Transaction::Observer::activate and Fence::extract_msg of QuartzCore 26.7.2, REA):
+ * complex, one out-of-line descriptor = an array of u64 fence ids.  id 'cfmr' (0x726d6663), size 0x34: after the descriptor two u32 (a time-stamp pair); the client then sends its deferrals (ids 40004 / 40005).
+ * id 'gflr' (0x726c6667), size 0x48: after the descriptor 12 bytes, a u64 at 0x38 and a double at 0x40 (the time); it removes the ids from the pending set of the observer and so ends the fence. */
+static unsigned long long fence_ids[1] = { 1 };
+
+static void
+send_fence_msg(u32 port, u32 id)
+{
+	u32 m[18];
+	int i;
+
+	for (i = 0; i < 18; i++) m[i] = 0;
+	m[0] = 0x80000013; m[1] = id == 0x726d6663 ? 52 : 72; m[2] = port; m[5] = id;
+	m[6] = 1; *(unsigned long *)&m[7] = (unsigned long)fence_ids; m[9] = 0x01000100; m[10] = sizeof fence_ids;
+	mach_msg(m, 1 | 0x80, m[1], 0, 0, 100, 0);
+}
+
 static u32 fences[64], nfence;
 
 int
@@ -191,6 +208,7 @@ main(void)
 					for (n = 0; n < nfence; n++)
 						if (fences[n] == buf[off]) mine = 1, fences[n] = 0;
 					out(mine ? "carender-stub: fence completed " : "carender-stub: port of a commit released "); hex(buf[off], 8); out("\n");
+					if (!mine) { send_fence_msg(buf[off], 0x726d6663); send_fence_msg(buf[off], 0x726c6667); out("carender-stub: fence messages sent to "); hex(buf[off], 8); out("\n"); }
 					mach_port_destroy(mach_task_self_, buf[off]);		/* the right is given up: a client that waits for the last sender to go (or for the dead name) goes on */
 				}
 				off += type == 1 ? 4 : 3;
