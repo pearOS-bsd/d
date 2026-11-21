@@ -125,6 +125,17 @@ handle(xpc_object_t peer, xpc_object_t m, int nsxpc, const char *svc)
 			xpc_connection_send_message(peer, r);
 			return;
 		}
+		if (streq(svc, "com.apple.uiintelligencesupport.agent") && xpc_dictionary_get_value(m, "_CodableBody") != 0) {
+			/* IntelligenceSupport's Codable XPC (macOS 26): AppKit sends "initialize" before it commits the first window and goes on with the reply.  Reply in the same shape: an empty body, version 1, not sync. The real body of the reply is not known yet. */
+			xpc_dictionary_set_data(r, "_CodableBody", "", 0);
+			xpc_dictionary_set_value(r, "_CodableOutOfLine4CodableObject", xpc_array_create(0, 0));
+			xpc_dictionary_set_value(r, "_CodableOutOfLine", xpc_array_create(0, 0));
+			xpc_dictionary_set_int64(r, "_CodableCoderVersion", 1);
+			xpc_dictionary_set_bool(r, "_CodableIsSync", 0);
+			xpc_connection_send_message(peer, r);
+			out("lsd-stub: uiintelligencesupport reply sent\n");
+			return;
+		}
 		if (streq(svc, "com.apple.pluginkit.pkd") && xpc_dictionary_get_string(m, "request") != 0) {
 			/* PlugInKit: {"matches": {key: data}}; the data is a bplist15 of an empty list of plug-ins (the answer of the pkd of the Mac to a match with no result, found with a program) */
 			static const unsigned char bp[23] = { 'b','p','l','i','s','t','1','5', 0x13, 0x17, 0,0,0,0,0,0, 0x80, 0x12, 0,0,0,0, 0xa0 };
