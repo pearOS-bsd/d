@@ -75,6 +75,25 @@ answer_register(u32 *buf, u32 p1, u32 p2, u32 n1, u32 n2, u32 last)
 	mach_msg(rep, 1, 0x50, 0, 0, 0, 0);
 }
 
+/* After CASRegisterClient the real render server sends three one-way messages to the client's port (captured on a Mac with SwiftUI/tools/msgtrace.c): ids 0x9dd0, 0x9dd1 (size 36, body 0, 1, 0)
+ * and 0x9dd2 (size 40, body 0, 1, 0, 0).  The meaning is not known (the QuartzCore of the client does not commit before them?); which of the two real ports of the request is the client's is not
+ * known either, so both get them.  Sent with a copy of the send right (bits 0x13). */
+static void
+send_registered(u32 port)
+{
+	u32 m[10];
+	int i, k;
+
+	if (port == 0) return;
+	for (k = 0; k < 3; k++) {
+		for (i = 0; i < 10; i++) m[i] = 0;
+		m[0] = 0x13; m[1] = k == 2 ? 40 : 36; m[2] = port; m[5] = 0x9dd0 + k;
+		m[7] = 1;							/* body: 0, 1, 0 (and a fourth 0 for the third message) */
+		mach_msg(m, 1 | 0x80 /* MACH_SEND_TIMEOUT */, m[1], 0, 0, 100, 0);
+	}
+	out("carender-stub: sent the three notifications to port "); hex(port, 8); out("\n");
+}
+
 static u32 fences[64], nfence;
 
 int
@@ -197,6 +216,7 @@ main(void)
 
 			client_id++;
 			answer_register(buf, p1, p2, client_id, client_id, 0);
+			if (buf[0] & 0x80000000) { send_registered(buf[7]); send_registered(buf[10]); }
 			out("carender-stub: answered the register, client "); hex(client_id, 8); out("\n");
 		}
 	}
