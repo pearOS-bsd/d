@@ -4,6 +4,7 @@ typedef unsigned int u32;
 typedef unsigned long u64;
 extern u32 bootstrap_port;
 extern int bootstrap_check_in(u32 bp, const char *name, u32 *port);
+extern int getpid(void);
 extern int mach_msg(void *msg, int opt, u32 ssz, u32 rsz, u32 rname, u32 to, u32 notify);
 extern int mach_port_allocate(u32 task, u32 right, u32 *name);
 extern int mach_port_insert_right(u32 task, u32 name, u32 poly, u32 how);
@@ -97,17 +98,22 @@ send_registered(u32 port)
 /* The messages of the real render server to the fence observer port of a client (CA::Render::Fence::Transaction::Observer::activate and Fence::extract_msg of QuartzCore 26.7.2, REA):
  * complex, one out-of-line descriptor = an array of u64 fence ids.  id 'cfmr' (0x726d6663), size 0x34: after the descriptor two u32 (a time-stamp pair); the client then sends its deferrals (ids 40004 / 40005).
  * id 'gflr' (0x726c6667), size 0x48: after the descriptor 12 bytes, a u64 at 0x38 and a double at 0x40 (the time); it removes the ids from the pending set of the observer and so ends the fence. */
-static unsigned long long fence_ids[1] = { 1 };
+static unsigned long long fence_ids[16];
+static unsigned long long fence_names[64];
+static unsigned long long pend[16][8], reply_names[8];		/* the names of the fences of every transaction that was applied and whose observer port has not come back with a commit yet (first in, first out) */
+static u32 pendn[16], npend, pendhead;
+
 
 static int
-send_fence_msg(u32 port, u32 id)
+send_fence_msg(u32 port, u32 id, unsigned long long *ids, u32 nids)
 {
 	u32 m[18];
 	int i;
 
 	for (i = 0; i < 18; i++) m[i] = 0;
 	m[0] = 0x80000013; m[1] = id == 0x726d6663 ? 52 : 72; m[2] = port; m[5] = id;
-	m[6] = 1; *(unsigned long *)&m[7] = (unsigned long)fence_ids; m[9] = 0x01000100; m[10] = sizeof fence_ids;
+	m[6] = 1; *(unsigned long *)&m[7] = (unsigned long)ids; m[9] = 0x01000100; m[10] = nids * 8;
+	if (id == 0x726d6663) m[11] = getpid();			/* the pid of the server, at 0x2c (send_rmfc_msg) */
 	return mach_msg(m, 1 | 0x80, m[1], 0, 0, 100, 0);
 }
 
@@ -188,6 +194,7 @@ main(void)
 		}
 		if (buf[5] == 0x9c42 && (buf[0] & 0x80000000) && buf[6] >= 1) {	/* a commit with a send-once right among its descriptors (the client waits on it: no new commit before the answer): an empty message to it.  The descriptors are 12 bytes (port) or 16 (out of line memory) */
 			u32 k, off = 7;		/* word index of the first descriptor */
+			u32 obs[8], nobs = 0, nm = 0;
 
 
 			for (k = 0; k < buf[6] && off + 3 <= 64; k++) {
@@ -200,19 +207,56 @@ main(void)
 					kr2 = mach_msg(ack, 1, 24, 0, 0, 0, 0);
 					out("carender-stub: commit acknowledged "); hex((u32)kr2, 8); out("\n");
 				}
-				if (type == 0 && disp == 0x11) {		/* a fence that this stub made comes back with a commit: it is done (the client learns it when the port dies: its commit waits for that before it goes on) */
+				if (type == 0 && disp == 0x11) {		/* a port of the commit: a fence that this stub made (its name goes to the observers below), or the observer port of the client */
 					u32 n;
-
 					int mine = 0;
 
 					for (n = 0; n < nfence; n++)
-						if (fences[n] == buf[off]) mine = 1, fences[n] = 0;
-					out(mine ? "carender-stub: fence completed " : "carender-stub: port of a commit released "); hex(buf[off], 8); out("\n");
-					if (!mine) { int k1 = send_fence_msg(buf[off], 0x726d6663), k2 = send_fence_msg(buf[off], 0x726c6667); out("carender-stub: fence messages sent to "); hex(buf[off], 8); out(" kr "); hex((u32)k1, 8); out(" "); hex((u32)k2, 8); out("\n"); }
-					mach_port_destroy(mach_task_self_, buf[off]);		/* the right is given up: a client that waits for the last sender to go (or for the dead name) goes on */
+						if (fences[n] == buf[off]) { mine = 1; fences[n] = 0; if (nm < 16) fence_ids[nm++] = fence_names[n]; }
+					if (mine) {
+						out("carender-stub: fence completed "); hex(buf[off], 8); out("\n");
+						mach_port_destroy(mach_task_self_, buf[off]);		/* the right is given up: a client that waits for the last sender to go (or for the dead name) goes on */
+					} else if (nobs < 8) obs[nobs++] = buf[off];
 				}
 				off += type == 1 ? 4 : 3;
 			}
+			/* what the real server does with the names (send_rmfc_msg / send_rlfg_msg of QuartzCore): the observer ports of the client get 'cfmr' (the client sends its deferred commits) and then 'gflr' (the fences are released) */
+			for (k = 0; k < nobs; k++) {
+				unsigned long long *ids = fence_ids;
+				u32 cnt = nm;
+				int k1, k2;
+
+				if (npend > 0) { ids = pend[pendhead]; cnt = pendn[pendhead]; pendhead = (pendhead + 1) % 16; npend--; }
+				if (cnt == 0) continue;
+				k1 = send_fence_msg(obs[k], 0x726d6663, ids, cnt); k2 = send_fence_msg(obs[k], 0x726c6667, ids, cnt);
+				out("carender-stub: fence messages sent to "); hex(obs[k], 8); out(" names "); hex(cnt, 1); out(" kr "); hex((u32)k1, 8); out(" "); hex((u32)k2, 8); out("\n");
+			}
+			for (k = 0; k < nobs; k++) { out("carender-stub: port of a commit released "); hex(obs[k], 8); out("\n"); mach_port_destroy(mach_task_self_, obs[k]); }
+		}
+		if (buf[5] == 0x9d11 && buf[2] != 0) {			/* ApplyFenceTransaction (__XApplyFenceTransaction of QuartzCore: the request has 2 descriptors, an array of ports and an array of u32; the answer is complex, size 0x70, 4 descriptors: two out-of-line arrays (u64 names, u32 ids: empty here), the receive right of a new port (the client's fence observer listens on it: Observer::activate -> dispatch_mach_connect) and a send right to it (the client puts it into its commits, the server writes 'cfmr' / 'gflr' to it), NDR, four u32) */
+			u32 op = 0, am[28];
+
+			u32 nn = 0, pc = buf[10], q;
+			u32 *pl = (u32 *)*(unsigned long *)&buf[7];
+			unsigned long long *slot = npend < 16 ? pend[(pendhead + npend) % 16] : reply_names;
+
+			if (buf[6] >= 1 && pl != 0) for (q = 0; q < pc && nn < 8; q++) {
+				u32 n;
+				for (n = 0; n < nfence; n++) if (fences[n] == pl[q] && fences[n] != 0) { slot[nn++] = fence_names[n]; break; }
+			}
+			if (slot != reply_names) pendn[(pendhead + npend++) % 16] = nn;
+			for (q = 0; q < nn; q++) reply_names[q] = slot[q];
+			mach_port_allocate(mach_task_self_, 1, &op);
+			mach_port_insert_right(mach_task_self_, op, op, 20);
+			for (i = 0; i < 28; i++) am[i] = 0;
+			am[0] = 0x80000012; am[1] = 0x70; am[2] = buf[2]; am[5] = 0x9d11 + 100; am[6] = 4;
+			*(unsigned long *)&am[7] = (unsigned long)reply_names; am[9] = 0x01000100; am[10] = nn * 8;	/* the names of the fences of the transaction (not deallocated: the memory is ours) */
+			am[13] = 0x01000101;
+			am[15] = op; am[17] = 0x00100000;			/* MOVE_RECEIVE */
+			am[18] = op; am[20] = 0x00110000;			/* MOVE_SEND */
+			am[22] = 1;						/* NDR */
+			mach_msg(am, 1, 0x70, 0, 0, 0, 0);
+			out("carender-stub: answered the fence transaction, observer port "); hex(op, 8); out("\n");
 		}
 		if (buf[5] == 0x9d10 && buf[2] != 0) {			/* CASCreateFencePort: the answer carries a send right to a new port (a fence: nothing waits on it here) */
 			u32 fp = 0, fm[16];
@@ -220,13 +264,13 @@ main(void)
 			mach_port_allocate(mach_task_self_, 1, &fp);
 			mach_port_insert_right(mach_task_self_, fp, fp, 20);
 			mach_port_insert_member(mach_task_self_, fp, set);
-			if (nfence < 64) fences[nfence++] = fp;
+			if (nfence < 64) { fence_names[nfence] = 0x1000000000ULL + nfence + 1; fences[nfence++] = fp; }
 			for (i = 0; i < 16; i++) fm[i] = 0;
-			fm[0] = 0x80000012; fm[1] = 0x34; fm[2] = buf[2]; fm[5] = 0x9d10 + 100;
+			fm[0] = 0x80000012; fm[1] = 0x38; fm[2] = buf[2]; fm[5] = 0x9d10 + 100;
 			fm[6] = 1; fm[7] = fp; fm[8] = 0; fm[9] = 0x00130000;
 			fm[10] = 0; fm[11] = 1;						/* NDR */
-			fm[12] = 0;							/* the return code */
-			mach_msg(fm, 1, 0x34, 0, 0, 0, 0);
+			*(unsigned long long *)&fm[12] = fence_names[nfence - 1];	/* __XCreateFencePort (QuartzCore): no return code on success, the u64 name of the fence at 0x30, size 0x38 */
+			mach_msg(fm, 1, 0x38, 0, 0, 0, 0);
 			out("carender-stub: fence port made\n");
 		}
 		if (buf[5] == 0x9d0a) {
