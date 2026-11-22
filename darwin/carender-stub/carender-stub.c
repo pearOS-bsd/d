@@ -12,6 +12,8 @@ extern int mach_port_insert_right(u32 task, u32 name, u32 poly, u32 how);
 extern int mach_port_destroy(u32 task, u32 name);
 extern int mach_port_insert_member(u32 task, u32 name, u32 pset);
 extern u32 mach_task_self_;
+extern int mach_vm_map(u32 task, u64 *addr, u64 size, u64 mask, int flags, u32 object, u64 offset, int copy, int cur, int max, int inherit);
+extern int mach_vm_deallocate(u32 task, u64 addr, u64 size);
 extern long write(int fd, const void *buf, unsigned long n);
 
 static void out(const char *s) { unsigned long n = 0; while (s[n]) n++; write(2, s, n); }
@@ -35,6 +37,27 @@ static void ca_connect(void)
 	sa.len = sizeof(sa); sa.family = 1;
 	cafd = socket(1, 1, 0);			/* AF_UNIX, SOCK_STREAM */
 	if (cafd >= 0 && connect(cafd, &sa, sizeof(sa)) != 0) { close(cafd); cafd = -1; }
+}
+
+/* the shared memory of a commit (CA::Shmem: the pixels of an Image) arrives as a memory-entry port: map it, and send the bytes like out-of-line data.  The size of an entry is not asked of anybody (the
+ * render server knows it from the object that names the memory): the biggest size that mach_vm_map accepts is the size of the entry, found by doubling and halving. */
+static int map_entry(u32 port, u64 *addr, u64 *size)
+{
+	u64 lo = 0, hi = 4096, a = 0;
+
+	while (hi <= (64ul << 20) && mach_vm_map(mach_task_self_, &a, hi, 0, 1, port, 0, 0, 3, 3, 1) == 0) { mach_vm_deallocate(mach_task_self_, a, hi); lo = hi; hi *= 2; a = 0; }
+	if (lo == 0) return -1;
+	while (hi - lo > 4096) {
+		u64 mid = (lo + (hi - lo) / 2) & ~4095ul;
+
+		a = 0;
+		if (mid > lo && mach_vm_map(mach_task_self_, &a, mid, 0, 1, port, 0, 0, 3, 3, 1) == 0) { mach_vm_deallocate(mach_task_self_, a, mid); lo = mid; }
+		else hi = mid > lo ? mid : hi - 4096;
+	}
+	a = 0;
+	if (mach_vm_map(mach_task_self_, &a, lo, 0, 1, port, 0, 0, 3, 3, 1) != 0) return -1;
+	*addr = a; *size = lo;
+	return 0;
 }
 static void ca_send(u32 type, const void *a, u32 alen, const void *b, u32 blen)
 {
@@ -207,8 +230,21 @@ main(void)
 						if (of >= 0) { write(of, (void *)ad, sz); close(of); }
 						{ u32 hd[2]; hd[0] = nmsg; hd[1] = k; ca_send(2, hd, 8, (void *)ad, sz); }
 						off += 16;
-					} else
+					} else {
+						if (dsc[11] == 0 && *(u32 *)dsc != 0 && buf[5] != 0x9c42) {	/* a port: a memory entry (the shared memory of an Image)? */
+							u64 ad = 0, sz = 0;
+
+							int mr = map_entry(*(u32 *)dsc, &ad, &sz);
+
+							if (trace) { out("carender-stub: port descriptor "); hex(k, 4); out(" name "); hex(*(u32 *)dsc, 8); out(mr == 0 ? " mapped, size " : " is not a memory entry "); hex((u32)sz, 8); out("\n"); }
+							if (mr == 0) {
+								u32 hd[2]; hd[0] = nmsg; hd[1] = k;
+								ca_send(2, hd, 8, (void *)ad, (u32)sz);
+								mach_vm_deallocate(mach_task_self_, ad, sz);
+							}
+						}
 						off += 12;
+					}
 				}
 				nmsg++;
 			}
