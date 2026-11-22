@@ -239,6 +239,14 @@ main(void)
 							if (trace) { out("carender-stub: port descriptor "); hex(k, 4); out(" name "); hex(*(u32 *)dsc, 8); out(mr == 0 ? " mapped, size " : " is not a memory entry "); hex((u32)sz, 8); out("\n"); }
 							if (mr == 0) {
 								u32 hd[2]; hd[0] = nmsg; hd[1] = k;
+								if (trace) {	/* the first bytes of every shared memory of a commit: /tmp/ca-shm-<message>-<descriptor>.bin (the layout of an image queue was found this way) */
+									char nm2[40] = "/tmp/ca-shm-00-0.bin";
+									int of2;
+
+									nm2[12] = '0' + (nmsg / 10) % 10; nm2[13] = '0' + nmsg % 10; nm2[15] = '0' + k;
+									of2 = open(nm2, 0x601, 0644);
+									if (of2 >= 0) { write(of2, (void *)ad, sz > 0x1000 ? 0x1000 : sz); close(of2); }
+								}
 								ca_send(2, hd, 8, (void *)ad, (u32)sz);
 								mach_vm_deallocate(mach_task_self_, ad, sz);
 							}
