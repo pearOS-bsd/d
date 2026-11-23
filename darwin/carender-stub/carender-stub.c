@@ -283,7 +283,7 @@ main(void)
 					out("carender-stub: answered "); hex(buf[5], 8); out("\n");
 				}
 		}
-		if (buf[5] == 0x9c42 && (buf[0] & 0x80000000) && buf[6] >= 1) {	/* a commit with a send-once right among its descriptors (the client waits on it: no new commit before the answer): an empty message to it.  The descriptors are 12 bytes (port) or 16 (out of line memory) */
+		if (buf[5] >= 0x9c42 && buf[5] <= 0x9c45 && (buf[0] & 0x80000000) && buf[6] >= 1) {	/* a commit with a send-once right among its descriptors (the client waits on it: no new commit before the answer): an empty message to it.  The descriptors are 12 bytes (port) or 16 (out of line memory) */
 			u32 k, off = 7;		/* word index of the first descriptor */
 			u32 obs[8], nobs = 0, nm = 0;
 
