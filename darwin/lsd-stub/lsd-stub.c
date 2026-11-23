@@ -356,28 +356,141 @@ handle(xpc_object_t peer, xpc_object_t m, int nsxpc, const char *svc)
 	}
 }
 
-/* libinfo (getpwuid, getpwnam: libsystem_info asks opendirectoryd through an xpc pipe, which has its own receive and reply calls; found in libsystem_info: __od_rpc_call, __extract_user): the reply is a dictionary with the fields of
- * struct passwd; the user of this machine is root */
+/* libinfo (getpwuid, getpwnam, getgrgid, getgrnam, getgrouplist: libsystem_info asks opendirectoryd through an xpc pipe, which has its own receive and reply calls; found in libsystem_info: __od_rpc_call, __extract_user): the reply is a dictionary with the fields of struct passwd / struct group (the names are the strings of libsystem_info: pw_name pw_passwd pw_uid pw_gid pw_change pw_expire pw_class pw_gecos pw_dir pw_shell, gr_name gr_passwd gr_gid gr_mem, groups, error).
+ * The users and groups are those of this machine: /etc/passwd and /etc/group (the FreeBSD files: name:*:uid:gid:gecos:home:shell and name:*:gid:members), so that a user of the lab has his home directory (cfprefsd looks it up for the preferences of the user).  Without a file the only user is root. */
+extern int open(const char *path, int flags, ...);
+extern long read(int fd, void *buf, unsigned long n);
+extern int close(int fd);
+extern xpc_object_t xpc_array_create(const xpc_object_t *objects, unsigned long count);
+extern void xpc_array_append_value(xpc_object_t a, xpc_object_t v);
+extern xpc_object_t xpc_int64_create(long v);
+
+static char od_buf[8192];
+static int
+od_load(const char *path)
+{
+	int fd = open(path, 0), n = 0;
+	long r;
+
+	if (fd < 0) return 0;
+	while (n < (int)sizeof(od_buf) - 1 && (r = read(fd, od_buf + n, sizeof(od_buf) - 1 - n)) > 0) n += (int)r;
+	close(fd);
+	od_buf[n] = 0;
+	return n;
+}
+/* the next line of od_buf from *pos: the fields (up to 8) are cut at ':' in place; returns the number of fields, 0 at the end */
+static int
+od_line(int *pos, char *f[8])
+{
+	int nf = 0;
+	char *p = od_buf + *pos;
+
+	while (*p == '\n' || *p == '\r') p++;
+	if (*p == 0) { *pos = (int)(p - od_buf); return 0; }
+	if (*p == '#') { while (*p && *p != '\n') p++; *pos = (int)(p - od_buf); return od_line(pos, f); }
+	f[nf++] = p;
+	while (*p && *p != '\n') { if (*p == ':' && nf < 8) { *p = 0; f[nf++] = p + 1; } p++; }
+	if (*p == '\n') *p++ = 0;
+	*pos = (int)(p - od_buf);
+	return nf;
+}
+static long
+od_num(const char *s)
+{
+	long v = 0; int neg = 0;
+
+	if (*s == '-') { neg = 1; s++; }
+	while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0');
+	return neg ? -v : v;
+}
+/* the home directory that libinfo gets: the real one of /etc/passwd would make cfprefsd (the daemon) read and watch the preferences of the user, and it dies of a null call (`FSEventStreamCreate`, SIGSEGV at address 0, measured 2026-11-23: with /Users/alex the daemon is gone after the first client, with /var/empty it never touches the user's files).  Until FSEvents works the user's home is /var/empty (set LSD_OD_REAL_HOME=1 in the environment of lsd-stub to give the real one). */
+extern char *getenv(const char *name);
+static const char *
+od_home(const char *real)
+{
+	return getenv("LSD_OD_REAL_HOME") != 0 ? real : "/var/empty";
+}
 static void
 od_reply(xpc_object_t m, xpc_object_t r)
 {
-	const char *rn = xpc_dictionary_get_string(m, "rpc_name");
+	const char *rn = xpc_dictionary_get_string(m, "rpc_name"), *nm = xpc_dictionary_get_string(m, "name");
+	char *f[8];
+	int pos = 0, nf;
 
-	if (rn != 0 && (streq(rn, "getpwuid") || streq(rn, "getpwnam"))) {
-		const char *nm = xpc_dictionary_get_string(m, "name");
+	if (rn == 0) { xpc_dictionary_set_int64(r, "error", 1); return; }
+	if (streq(rn, "getpwuid") || streq(rn, "getpwnam")) {
 		long uid = streq(rn, "getpwuid") ? xpc_dictionary_get_int64(m, "uid") : 0;
 
-		if (streq(rn, "getpwnam") && !(nm != 0 && streq(nm, "root"))) { xpc_dictionary_set_int64(r, "error", 1); return; }
-		xpc_dictionary_set_string(r, "pw_name", uid == 0 ? "root" : "user");
-		xpc_dictionary_set_string(r, "pw_passwd", "*");
-		xpc_dictionary_set_int64(r, "pw_uid", uid);
-		xpc_dictionary_set_int64(r, "pw_gid", uid == 0 ? 0 : 20);
-		xpc_dictionary_set_int64(r, "pw_change", 0);
-		xpc_dictionary_set_int64(r, "pw_expire", 0);
-		xpc_dictionary_set_string(r, "pw_class", "");
-		xpc_dictionary_set_string(r, "pw_gecos", uid == 0 ? "System Administrator" : "User");
-		xpc_dictionary_set_string(r, "pw_dir", uid == 0 ? "/root" : "/var/empty");
-		xpc_dictionary_set_string(r, "pw_shell", "/bin/sh");
+		od_load("/etc/passwd");
+		while ((nf = od_line(&pos, f)) > 0) {
+			if (nf < 7) continue;
+			if (streq(rn, "getpwuid") ? od_num(f[2]) == uid : (nm != 0 && streq(f[0], nm))) {
+				xpc_dictionary_set_string(r, "pw_name", f[0]);
+				xpc_dictionary_set_string(r, "pw_passwd", "*");
+				xpc_dictionary_set_int64(r, "pw_uid", od_num(f[2]));
+				xpc_dictionary_set_int64(r, "pw_gid", od_num(f[3]));
+				xpc_dictionary_set_int64(r, "pw_change", 0);
+				xpc_dictionary_set_int64(r, "pw_expire", 0);
+				xpc_dictionary_set_string(r, "pw_class", "");
+				xpc_dictionary_set_string(r, "pw_gecos", f[4]);
+				xpc_dictionary_set_string(r, "pw_dir", od_home(f[5]));
+				xpc_dictionary_set_string(r, "pw_shell", f[6]);
+				return;
+			}
+		}
+		xpc_dictionary_set_int64(r, "error", 1);
+	} else if (streq(rn, "getgrgid") || streq(rn, "getgrnam")) {
+		long gid = streq(rn, "getgrgid") ? xpc_dictionary_get_int64(m, "gid") : 0;
+
+		od_load("/etc/group");
+		while ((nf = od_line(&pos, f)) > 0) {
+			if (nf < 3) continue;
+			if (streq(rn, "getgrgid") ? od_num(f[2]) == gid : (nm != 0 && streq(f[0], nm))) {
+				xpc_object_t mem = xpc_array_create(0, 0);
+
+				xpc_dictionary_set_string(r, "gr_name", f[0]);
+				xpc_dictionary_set_string(r, "gr_passwd", "*");
+				xpc_dictionary_set_int64(r, "gr_gid", od_num(f[2]));
+				if (nf > 3) {		/* the members, separated by commas */
+					char *p = f[3];
+
+					while (*p) {
+						char *q = p;
+						while (*q && *q != ',') q++;
+						if (*q == ',') *q++ = 0;
+						if (*p) xpc_array_append_value(mem, xpc_string_create(p));
+						p = q;
+					}
+				}
+				xpc_dictionary_set_value(r, "gr_mem", mem);
+				return;
+			}
+		}
+		xpc_dictionary_set_int64(r, "error", 1);
+	} else if (streq(rn, "getgrouplist") && nm != 0) {		/* the groups of a user: his primary group and every group that lists him */
+		xpc_object_t gl = xpc_array_create(0, 0);
+		long pg = -1;
+		int n = 0;
+
+		od_load("/etc/passwd");
+		while ((nf = od_line(&pos, f)) > 0) if (nf >= 7 && streq(f[0], nm)) { pg = od_num(f[3]); break; }
+		if (pg >= 0) { xpc_array_append_value(gl, xpc_int64_create(pg)); n++; }
+		od_load("/etc/group"); pos = 0;
+		while ((nf = od_line(&pos, f)) > 0) {
+			if (nf < 4 || od_num(f[2]) == pg) continue;
+			{
+				char *p = f[3];
+
+				while (*p) {
+					char *q = p;
+					while (*q && *q != ',') q++;
+					if (*q == ',') *q++ = 0;
+					if (streq(p, nm)) { xpc_array_append_value(gl, xpc_int64_create(od_num(f[2]))); n++; break; }
+					p = q;
+				}
+			}
+		}
+		xpc_dictionary_set_value(r, "groups", gl);
 	} else
 		xpc_dictionary_set_int64(r, "error", 1);
 }
