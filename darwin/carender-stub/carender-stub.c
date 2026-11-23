@@ -231,7 +231,7 @@ main(void)
 						{ u32 hd[2]; hd[0] = nmsg; hd[1] = k; ca_send(2, hd, 8, (void *)ad, sz); }
 						off += 16;
 					} else {
-						if (dsc[11] == 0 && *(u32 *)dsc != 0 && buf[5] != 0x9c42) {	/* a port: a memory entry (the shared memory of an Image)? */
+						if (dsc[11] == 0 && *(u32 *)dsc != 0 && (buf[5] != 0x9c42 || k > 0)) {	/* a port: a memory entry (the shared memory of an Image)? */
 							u64 ad = 0, sz = 0;
 
 							int mr = map_entry(*(u32 *)dsc, &ad, &sz);
