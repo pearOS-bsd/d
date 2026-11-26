@@ -18,3 +18,8 @@ Next: the check-in of a daemon (the service gets the receive right), starting th
 `mkfolders.sh` makes the directories of root and nobody at the start, so the first program does not have to wait for the service.
 
 `lookuptest NAME` asks the bootstrap port for a service (what `bootstrap_look_up` of a program does); `lookuptest NAME stop` stops itself first, to attach a debugger.
+
+## Jobs from property lists (2026-11-26)
+An argument that ends in `.plist` is a job in the format of the Mac's `/System/Library/LaunchDaemons` / `LaunchAgents`: `Label`, `ProgramArguments` (or `Program`), `MachServices` (the names exist from the start and messages wait in the port until the program checks in; `HideUntilCheckIn` keeps a name out of look-ups until then), `RunAtLoad` (else the job starts at the first look-up of one of its names, like the Mac's on-demand launch), `UserName` (started through `daemon -u`; check-ins for the job's names are accepted from that user's processes). A job whose program exited gets a new port at the next look-up and is started again.
+Checked on the ISO test VM: `lsd` and `iconservicesagent` start on demand as the user when the Dock first looks them up, `iconservicesd` at load.
+Not yet: `KeepAlive`, `EnvironmentVariables` (pass them through `/usr/bin/env` in `ProgramArguments`), the `XPC_SERVICE_NAME` that the Mac's launchd sets for a job, and `bootstrap_check_in` from a program started as a job (our Dock's `com.apple.dock.server`): libxpc refuses it in the process without sending anything (cause not found).
