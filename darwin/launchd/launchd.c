@@ -24,6 +24,9 @@ extern int mkdir(const char *path, unsigned short mode);
 extern int chown(const char *path, unsigned int uid, unsigned int gid);
 extern int chmod(const char *path, unsigned short mode);
 extern void exit(int);
+extern int open(const char *path, int flags, ...);
+extern long read(int fd, void *buf, unsigned long n);
+extern int close(int fd);
 
 #define	MACH_SEND_MSG	1
 #define	MACH_RCV_MSG	2
@@ -268,8 +271,155 @@ domain_of(u32 pid)
 	return ("System");
 }
 
-struct svc { int used, own, pre, claimed; char name[96]; u32 port; };		/* pre: made at the start (the MachServices of a plist without HideUntilCheckIn: look-ups work before the check-in) */
+struct svc { int used, own, pre, claimed, job, hidden; char name[96]; u32 port; };	/* job: index in ljobs + 1 (0: none); hidden: HideUntilCheckIn (not found by a look-up before the check-in) */		/* pre: made at the start (the MachServices of a plist without HideUntilCheckIn: look-ups work before the check-in) */
 static struct svc svcs[256];
+
+/*
+ * Jobs from launchd property lists (the format of /System/Library/LaunchDaemons and LaunchAgents on the Mac): an argument that ends in ".plist" is a job.
+ * Read: Label, ProgramArguments (or Program), MachServices (the names exist from the start: a look-up before the check-in works, the messages wait in the port),
+ * RunAtLoad (started now; otherwise at the first look-up of one of its names, the on-demand start of the Mac's launchd), UserName (the job runs as that user:
+ * started through daemon(8) -u; a check-in for one of its names is accepted from that user's processes).
+ */
+struct ljob { char label[96]; char args[8][160]; int nargs; char user[32]; int uid, runatload, started; };
+static struct ljob ljobs[32];
+static int nljobs;
+static char plbuf[16384], pwbuf[16384];		/* the property list being read; /etc/passwd */
+
+static int
+pl_find(const char *buf, int from, const char *pat)		/* index just after pat in buf, -1 if not found */
+{
+	int i, k;
+
+	for (i = from; buf[i]; i++) {
+		for (k = 0; pat[k] && buf[i + k] == pat[k]; k++) ;
+		if (!pat[k]) return (i + k);
+	}
+	return (-1);
+}
+
+static int
+pl_string(const char *buf, int from, char *out, int max)	/* the text of the next <string>...</string> from `from`; index after it, -1 */
+{
+	int i = pl_find(buf, from, "<string>"), k = 0;
+
+	if (i < 0) return (-1);
+	while (buf[i] && buf[i] != '<' && k < max - 1) out[k++] = buf[i++];
+	out[k] = 0;
+	return (i);
+}
+
+static int
+pl_value_of(const char *buf, const char *key)			/* index just after <key>key</key>, -1 */
+{
+	char pat[80];
+	int i = 0, k;
+
+	for (k = 0; "<key>"[k]; k++) pat[i++] = "<key>"[k];
+	for (k = 0; key[k] && i < 70; k++) pat[i++] = key[k];
+	for (k = 0; "</key>"[k]; k++) pat[i++] = "</key>"[k];
+	pat[i] = 0;
+	return (pl_find(buf, 0, pat));
+}
+
+static int
+user_uid(const char *name)					/* the uid of a user in /etc/passwd, -1 */
+{
+	int fd = open("/etc/passwd", 0), n, i = 0;
+
+	if (fd < 0) return (-1);
+	n = (int)read(fd, pwbuf, sizeof(pwbuf) - 1);
+	close(fd);
+	if (n <= 0) return (-1);
+	pwbuf[n] = 0;
+	while (i < n) {
+		int k = 0, f, uid = 0;
+
+		while (name[k] && pwbuf[i + k] == name[k]) k++;
+		if (!name[k] && pwbuf[i + k] == ':') {
+			for (f = i + k + 1; pwbuf[f] && pwbuf[f] != ':'; f++) ;	/* the password field */
+			for (f++; pwbuf[f] >= '0' && pwbuf[f] <= '9'; f++) uid = uid * 10 + (pwbuf[f] - '0');
+			return (uid);
+		}
+		while (i < n && pwbuf[i] != '\n') i++;
+		i++;
+	}
+	return (-1);
+}
+
+static struct svc *svc_add(const char *n, u32 port, int own);
+static struct svc *svc_find(const char *n);
+
+static void
+job_load(const char *path)
+{
+	struct ljob *j;
+	int fd, n, i, e;
+
+	if (nljobs >= 32 || (fd = open(path, 0)) < 0) { out("launchd: cannot read the job "); out(path); out("\n"); return; }
+	n = (int)read(fd, plbuf, sizeof(plbuf) - 1);
+	close(fd);
+	if (n <= 0) return;
+	plbuf[n] = 0;
+	j = &ljobs[nljobs];
+	if ((i = pl_value_of(plbuf, "Label")) >= 0) pl_string(plbuf, i, j->label, sizeof(j->label));
+	if ((i = pl_value_of(plbuf, "ProgramArguments")) >= 0) {
+		e = pl_find(plbuf, i, "</array>");
+		while (j->nargs < 7 && (i = pl_string(plbuf, i, j->args[j->nargs], sizeof(j->args[0]))) >= 0 && (e < 0 || i < e)) j->nargs++;
+	} else if ((i = pl_value_of(plbuf, "Program")) >= 0 && pl_string(plbuf, i, j->args[0], sizeof(j->args[0])) >= 0)
+		j->nargs = 1;
+	if ((i = pl_value_of(plbuf, "UserName")) >= 0) pl_string(plbuf, i, j->user, sizeof(j->user));
+	j->uid = j->user[0] ? user_uid(j->user) : 0;
+	if ((i = pl_value_of(plbuf, "RunAtLoad")) >= 0) { int t = pl_find(plbuf, i, "<"); j->runatload = t >= 0 && plbuf[t] == 't'; }
+	if (j->nargs == 0) { out("launchd: job without a program: "); out(path); out("\n"); return; }
+	nljobs++;
+	if ((i = pl_value_of(plbuf, "MachServices")) >= 0 && (i = pl_find(plbuf, i, "<dict>")) >= 0) {
+		/* the keys at depth 1 are the names; a value may be a dictionary (HideUntilCheckIn, ResetAtClose) */
+		int depth = 1;
+
+		while (depth > 0 && plbuf[i]) {
+			if (plbuf[i] != '<') { i++; continue; }
+			if (pl_find(plbuf + i, 0, "<dict>") == 6) { depth++; i += 6; continue; }
+			if (pl_find(plbuf + i, 0, "</dict>") == 7) { depth--; i += 7; continue; }
+			if (depth == 1 && pl_find(plbuf + i, 0, "<key>") == 5) {
+				char name[96]; int k = 0, hide = 0; u32 pp = 0; struct svc *ps;
+
+				i += 5;
+				while (plbuf[i] && plbuf[i] != '<' && k < 95) name[k++] = plbuf[i++];
+				name[k] = 0;
+				{	/* the value: a dictionary with HideUntilCheckIn true? (up to the next key at this depth) */
+					int v = i, d = 0;
+
+					while (plbuf[v]) {
+						if (pl_find(plbuf + v, 0, "<dict>") == 6) d++;
+						else if (pl_find(plbuf + v, 0, "</dict>") == 7) { if (d == 0) break; if (--d == 0) break; }
+						else if (d == 0 && v > i + 6 && pl_find(plbuf + v, 0, "<key>") == 5) break;
+						else if (d == 1 && pl_find(plbuf + v, 0, "<key>HideUntilCheckIn</key>") == 27) { int t = pl_find(plbuf, v + 27, "<"); hide = t >= 0 && plbuf[t] == 't'; }
+						v++;
+					}
+				}
+				if ((ps = svc_find(name)) != 0) { ps->job = nljobs; ps->hidden = hide; continue; }	/* a name made at the start (the fixed list): it now belongs to the job */
+				if (mach_port_allocate(mach_task_self_, 1, &pp) == 0 && mach_port_insert_right(mach_task_self_, pp, pp, 20) == 0 && (ps = svc_add(name, pp, 0)) != 0) { ps->pre = 1; ps->job = nljobs; ps->hidden = hide; }
+				continue;
+			}
+			i++;
+		}
+	}
+	out("launchd: job "); out(j->label); out(" ("); out(j->args[0]); out(")\n");
+}
+
+static void
+job_start(int idx, char **envp)
+{
+	struct ljob *j = &ljobs[idx];
+	char *av[12];
+	int na = 0, k, pid = 0;
+
+	if (j->user[0] && j->uid != 0) { av[na++] = "/usr/sbin/daemon"; av[na++] = "-u"; av[na++] = j->user; }
+	for (k = 0; k < j->nargs && na < 11; k++) av[na++] = j->args[k];
+	av[na] = 0;
+	j->started = posix_spawn(&pid, av[0], 0, 0, av, envp) == 0;
+	out(j->started ? "launchd: started the job " : "launchd: cannot start the job "); out(j->label); out("\n");
+}
 
 static struct svc *
 svc_find(const char *n)
@@ -480,6 +630,7 @@ main(int argc, char **argv, char **envp)
 
 			for (k = 0; progs[i][k] && k < 255; k++) buf[k] = progs[i][k];
 			buf[k] = 0;
+			if (k > 6 && same(buf + k - 6, ".plist")) { job_load(buf); continue; }	/* a launchd property list: a job */
 			for (k = 0; buf[k] && na < 7; ) {		/* "path arg arg": the words are separated by spaces */
 				av[na++] = &buf[k];
 				while (buf[k] && buf[k] != ' ') k++;
@@ -502,6 +653,11 @@ main(int argc, char **argv, char **envp)
 			}
 			else { out("launchd: cannot start "); out(progs[i]); out("\n"); }
 		}
+	}
+	{
+		int ji;
+
+		for (ji = 0; ji < nljobs; ji++) if (ljobs[ji].runatload) job_start(ji, envp);
 	}
 	for (;;) {
 		const u32 *tr;
@@ -581,7 +737,7 @@ main(int argc, char **argv, char **envp)
 					u32 rt = rq.h.id & 0xfff;
 					struct svc *sv = svc_find((const char *)(v + 2));
 
-					if ((rt == 0xce || rt == 0x325) && sv != 0 && sv->pre && !sv->claimed) {	/* the check-in of a service that was made at the start: the receive right goes to it */
+					if ((rt == 0xce || rt == 0x325) && sv != 0 && sv->pre && !sv->claimed && (sv->job == 0 || tr_uid(&rq.h) == 0 || (int)tr_uid(&rq.h) == ljobs[sv->job - 1].uid)) {	/* a job's name: its user only */	/* the check-in of a service that was made at the start: the receive right goes to it */
 						sv->claimed = 1;
 						reply_port(&rq.h, sv->port, 16);
 						continue;
@@ -591,7 +747,7 @@ main(int argc, char **argv, char **envp)
 
 						/* the program that held the receive right exited: our send right is a dead name.  launchd of the Mac gets the right back (port-destroyed
 						 * notification) and hands it to the next instance of the job; here the next instance gets a new port, and clients that held the old one look it up again */
-						if (sv != 0 && tr_uid(&rq.h) == 0 && mach_port_type(mach_task_self_, sv->port, &ty) == 0 && (ty & 0x100000)) {
+						if (sv != 0 && (tr_uid(&rq.h) == 0 || (sv->job && (int)tr_uid(&rq.h) == ljobs[sv->job - 1].uid)) && mach_port_type(mach_task_self_, sv->port, &ty) == 0 && (ty & 0x100000)) {
 							u32 p = 0;
 
 							if (mach_port_allocate(mach_task_self_, 1, &p) == 0 && mach_port_insert_right(mach_task_self_, p, p, 20) == 0) {
@@ -610,6 +766,16 @@ main(int argc, char **argv, char **envp)
 						}
 						reply(&rq.h, 1, 1);		/* known already, or not allowed: BOOTSTRAP_NOT_PRIVILEGED-like */
 						continue;
+					}
+					if ((rt >= 0x320 || rt == 0xcf) && sv && sv->hidden && !sv->claimed) sv = 0;	/* HideUntilCheckIn: not there yet */
+					if ((rt >= 0x320 || rt == 0xcf) && sv && sv->job) {	/* a job's name: start the job on demand; a job that exited gets a new port (the messages wait in it until the check-in) */
+						u32 ty = 0, p = 0;
+
+						if (sv->claimed && mach_port_type(mach_task_self_, sv->port, &ty) == 0 && (ty & 0x100000) &&
+						    mach_port_allocate(mach_task_self_, 1, &p) == 0 && mach_port_insert_right(mach_task_self_, p, p, 20) == 0) {
+							sv->port = p; sv->claimed = 0; ljobs[sv->job - 1].started = 0;
+						}
+						if (!ljobs[sv->job - 1].started) job_start(sv->job - 1, envp);
 					}
 					if ((rt >= 0x320 || rt == 0xcf) && sv) {	/* look-up */
 						reply_port(&rq.h, sv->port, sv->own ? 20 : 19);
