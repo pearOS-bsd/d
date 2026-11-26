@@ -14,6 +14,7 @@ extern u32 mach_task_self_;
 extern int mach_msg(void *msg, int option, u32 send_size, u32 rcv_size, u32 rcv_name, u32 timeout, u32 notify);
 extern int mach_port_allocate(u32 task, u32 right, u32 *name);
 extern int mach_port_insert_right(u32 task, u32 name, u32 poly, u32 poly_poly);
+extern int mach_port_type(u32 task, u32 name, u32 *ptype);
 extern int task_set_special_port(u32 task, int which, u32 port);
 extern long write(int fd, const void *buf, unsigned long n);
 extern int getpid(void);
@@ -586,6 +587,20 @@ main(int argc, char **argv, char **envp)
 						continue;
 					}
 					if (rt == 0xce || rt == 0x325) {		/* check-in (bootstrap_check_in: 0xce; the listener of an XPC connection: 0x325): the service gets the receive right of its port */
+						u32 ty = 0;
+
+						/* the program that held the receive right exited: our send right is a dead name.  launchd of the Mac gets the right back (port-destroyed
+						 * notification) and hands it to the next instance of the job; here the next instance gets a new port, and clients that held the old one look it up again */
+						if (sv != 0 && tr_uid(&rq.h) == 0 && mach_port_type(mach_task_self_, sv->port, &ty) == 0 && (ty & 0x100000)) {
+							u32 p = 0;
+
+							if (mach_port_allocate(mach_task_self_, 1, &p) == 0 && mach_port_insert_right(mach_task_self_, p, p, 20) == 0) {
+								out("launchd:   check-in again (the previous instance exited)\n");
+								sv->port = p; sv->claimed = 1;
+								reply_port(&rq.h, sv->port, 16);
+								continue;
+							}
+						}
 						if (sv == 0 && tr_uid(&rq.h) == 0) {
 							u32 p = 0;
 
