@@ -15,6 +15,7 @@ typedef unsigned int u32;
 typedef unsigned long u64;
 extern u32 mach_task_self_;
 extern u32 bootstrap_port;
+extern int bootstrap_look_up(u32 bp, const char *name, u32 *port);
 extern int mach_msg(void *msg, int option, u32 send_size, u32 rcv_size, u32 rcv_name, u32 timeout, u32 notify);
 extern int mach_port_allocate(u32 task, u32 right, u32 *name);
 extern int mach_port_insert_right(u32 task, u32 name, u32 poly, u32 poly_poly);
@@ -393,6 +394,37 @@ fail:
 	}
 }
 
+/* CreateLayerContext (30243): the client gets a render context of the window server and commits its layers to it (the Dock's window content).  On the Mac WindowServer calls CARenderContextNew,
+ * CARenderContextGetId and CARenderContextGetServerPort and answers with that port and the id (decompiled __XCreateLayerContext of SkyLight; the client side, SLSCreateLayerContext, takes an
+ * answer of id 0x7687, size 0x34, one port descriptor (MOVE_SEND) and the id at 0x30).  The render server here is carender-stub: it makes the context (message 0x0ca0c7e1) and the answer goes to
+ * the client from here; WindowServer learns the id from CreateWindow, which carries it. */
+static int create_layer_context(void)
+{
+	static u32 ca = 0, rport = 0;
+	u32 m[16], i, kr;
+
+	if (rq.h.remote == 0) return (-1);
+	if (ca == 0 && bootstrap_look_up(bootstrap_port, "com.apple.CARenderServer", &ca) != 0) { ca = 0; return (-1); }
+	if (rport == 0 && (mach_port_allocate(mach_task_self_, 1, &rport) != 0)) { rport = 0; return (-1); }
+	for (i = 0; i < 16; i++) m[i] = 0;
+	m[0] = 0x1513; m[1] = 24; m[2] = ca; m[3] = rport; m[5] = 0x0ca0c7e1;		/* remote COPY_SEND, local MAKE_SEND_ONCE */
+	kr = (u32)mach_msg(m, MACH_SEND_MSG | MACH_RCV_MSG | 0x100 /* RCV_TIMEOUT */, 24, sizeof(m), rport, 2000, 0);
+	if (kr != 0 || m[5] != 0x0ca0c7e1 + 100 || m[6] != 1) { out("wsbridge:   no render context from carender-stub, error "); outx(kr); out("\n"); if (kr == 0x10000003) ca = 0; return (-1); }
+	{
+		u32 port = m[7], ctx = m[10], *w = (u32 *)&rp.h;
+
+		for (i = 0; i < 13; i++) w[i] = 0;
+		rp.h.bits = 0x80000012; rp.h.size = 0x34; rp.h.remote = rq.h.remote; rp.h.id = 0x7623 + 100;
+		w[6] = 1;						/* one descriptor */
+		w[7] = port; w[9] = (17u << 16);			/* MOVE_SEND of the context's port */
+		w[10] = 0; w[11] = 1;					/* NDR */
+		w[12] = ctx;
+		out("wsbridge:   render context "); outx(ctx); out(" port "); outx(port); out("\n");
+		mach_msg(&rp.h, MACH_SEND_MSG, 0x34, 0, 0, 0, 0);
+	}
+	return (0);
+}
+
 int
 main(void)
 {
@@ -420,6 +452,8 @@ main(void)
 		}
 		tr = (const u32 *)(rq.raw + ((rq.h.size + 3) & ~3u));
 		out("wsbridge: id "); outx(rq.h.id); tms(); out(" size "); outx(rq.h.size); out(" bits "); outx(rq.h.bits); out(" port "); outx(rq.h.local); out(" from pid "); outx(tr[10]); out("\n");
+		if (rq.h.id == 0x7623 && create_layer_context() == 0)
+			continue;
 		forward(tr, rq.h.local == port ? 0 : rq.h.local);
 	}
 }

@@ -207,6 +207,24 @@ main(void)
 		flush_delayed();
 		if (kr == 0x10004003) continue;
 		if (kr != 0) { out("carender-stub: receive error "); hex((u32)kr, 8); out("\n"); continue; }
+		if (buf[5] == 0x0ca0c7e1 && buf[2] != 0) {	/* the window server asks for a render context of its own (on the Mac WindowServer calls CARenderContextNew, CARenderContextGetId and
+							 * CARenderContextGetServerPort for a client's SLSCreateLayerContext (decompiled __XCreateLayerContext of SkyLight) and the client commits to that port): here wsbridge asks
+							 * this server, which makes a port for the context, receives on it with the others (the commits carry the context id) and answers: a send right to it + the id */
+			static u32 ctx_seed = 0x62c37b8b;
+			u32 cp = 0, rp2[11], ctx;
+
+			ctx_seed = ctx_seed * 1103515245u + 12345u;
+			ctx = ctx_seed | 1;
+			if (mach_port_allocate(mach_task_self_, 1, &cp) == 0 && mach_port_insert_member(mach_task_self_, cp, set) == 0) {
+				rp2[0] = 0x80000012; rp2[1] = 44; rp2[2] = buf[2]; rp2[3] = 0; rp2[4] = 0; rp2[5] = buf[5] + 100;
+				rp2[6] = 1;				/* one descriptor */
+				rp2[7] = cp; rp2[8] = 0; rp2[9] = (20u << 16);	/* port descriptor: MAKE_SEND of the context's port, type 0 */
+				rp2[10] = ctx;
+				mach_msg(rp2, 1, 44, 0, 0, 0, 0);
+				out("carender-stub: render context "); hex(ctx, 8); out(" on port "); hex(cp, 8); out("\n");
+			}
+			continue;
+		}
 		if (trace) { out("carender-stub: msg id "); hex(buf[5], 8); out(" size "); hex(buf[1], 8); out(" bits "); hex(buf[0], 8); out(" remote "); hex(buf[2], 8); out(" local "); hex(buf[3], 8); out("\n  "); }
 		if (buf[5] >= 0x9c42 && buf[5] <= 0x9c45) {	/* the command streams are kept whole in /tmp/ca.bin: a u32 length, then the message */
 			int cf = trace ? open("/tmp/ca.bin", 0x209, 0644) : -1;
