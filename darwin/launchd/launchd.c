@@ -346,6 +346,7 @@ user_uid(const char *name)					/* the uid of a user in /etc/passwd, -1 */
 	return (-1);
 }
 
+static struct { u32 pid, port; char name[96]; } preg[64];	/* names registered by processes in their own domain (bootstrap_register2 with flags 1): the send rights stay here */
 static struct svc *svc_add(const char *n, u32 port, int own);
 static struct svc *svc_find(const char *n);
 
@@ -776,6 +777,34 @@ main(int argc, char **argv, char **envp)
 							sv->port = p; sv->claimed = 0; ljobs[sv->job - 1].started = 0;
 						}
 						if (!ljobs[sv->job - 1].started) job_start(sv->job - 1, envp);
+					}
+					if (rt == 0xcc) {		/* register (bootstrap_register2): a name for a send right that the process gives; HIServices registers its accessibility server port as
+								 * com.apple.axserver in the domain of the process (flags 1) and drops its own send right, so the right must stay here: without it the port has no sender,
+								 * the no-more-senders notification comes back at once and the run loop of the app re-arms it for ever (the real Dock spun at 100% CPU) */
+						const u32 *w = (const u32 *)&rq.h;
+						u32 pid = trailer_of(&rq.h)[10], port = (rq.h.bits & 0x80000000u) && w[6] >= 1 ? w[7] : 0, i, slot = 64;
+
+						if (port != 0) {
+							for (i = 0; i < 64; i++) {
+								if (preg[i].port != 0 && preg[i].pid == pid && same(preg[i].name, (const char *)(v + 2))) { slot = i; break; }
+								if (preg[i].port == 0 && slot == 64) slot = i;
+							}
+							if (slot < 64) {
+																preg[slot].pid = pid; preg[slot].port = port; { const char *nm = (const char *)(v + 2); int k; for (k = 0; k < 95 && nm[k]; k++) preg[slot].name[k] = nm[k]; preg[slot].name[k] = 0; }
+								out("launchd:   registered for pid "); outx(pid); out("\n");
+								reply(&rq.h, 0, 0);
+								continue;
+							}
+						}
+						reply(&rq.h, 1, 3);
+						continue;
+					}
+					if ((rt >= 0x320 || rt == 0xcf) && !sv) {	/* a name that a process registered in its own domain: found by its look-ups */
+						u32 pid = trailer_of(&rq.h)[10], i;
+
+						for (i = 0; i < 64; i++)
+							if (preg[i].port != 0 && preg[i].pid == pid && same(preg[i].name, (const char *)(v + 2))) break;
+						if (i < 64) { reply_port(&rq.h, preg[i].port, 19); continue; }
 					}
 					if ((rt >= 0x320 || rt == 0xcf) && sv) {	/* look-up */
 						reply_port(&rq.h, sv->port, sv->own ? 20 : 19);
