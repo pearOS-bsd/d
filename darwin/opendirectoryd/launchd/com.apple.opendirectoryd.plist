@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- opendirectoryd (github.com/pearOS-bsd/d, darwin/opendirectoryd): the job of the Mac's /System/Library/LaunchDaemons/com.apple.opendirectoryd.plist
+     with our program and the two services that libsystem_info asks for (getpwuid & co, mbr_*); root (libinfo takes a reply only from uid 0),
+     started at the first look-up.  The launchd of d reads it from /usr/libexec/pearos/jobs. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.opendirectoryd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/pearos/opendirectoryd</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.system.opendirectoryd.libinfo</key>
+		<true/>
+		<key>com.apple.system.opendirectoryd.membership</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

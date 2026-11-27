@@ -1,0 +1,23 @@
+name: opendirectoryd
+on:
+  push:
+    paths: ['darwin/opendirectoryd/**', '.github/workflows/opendirectoryd.yml']
+  pull_request:
+    paths: ['darwin/opendirectoryd/**', '.github/workflows/opendirectoryd.yml']
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang and lld
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+      - name: Build the Mach-O daemon
+        run: CC=clang LD64=$(ls /usr/lib/llvm-*/bin/ld64.lld | tail -1) sh darwin/opendirectoryd/build.sh out
+      - name: Check the binary and the jobs
+        run: |
+          file out/opendirectoryd | grep -q 'Mach-O 64-bit x86_64 executable'
+          OD=$(ls /usr/lib/llvm-*/bin/llvm-objdump | tail -1)
+          $OD --macho --dylibs-used out/opendirectoryd | tee dylibs.txt
+          grep -q 'libSystem.B.dylib' dylibs.txt
+          $OD --macho --syms out/opendirectoryd | grep -q '_main'
+          for p in darwin/opendirectoryd/launchd/*.plist; do python3 -c "import plistlib,sys; d=plistlib.load(open(sys.argv[1],'rb')); assert d['Label'] and d['MachServices']" "$p"; done
