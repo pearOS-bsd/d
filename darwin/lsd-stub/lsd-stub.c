@@ -38,6 +38,7 @@ extern xpc_object_t xpc_string_create(const char *s);
 extern xpc_object_t xpc_data_create(const void *b, unsigned long n);
 extern xpc_object_t xpc_uuid_create(const unsigned char *u);
 extern int xpc_connection_get_pid(xpc_object_t c);
+extern int xpc_connection_get_asid(xpc_object_t c);
 extern xpc_object_t xpc_array_create(const xpc_object_t *objects, unsigned long count);
 extern void xpc_array_append_value(xpc_object_t a, xpc_object_t v);
 extern xpc_object_t xpc_uint64_create(unsigned long v);
@@ -298,10 +299,17 @@ handle(xpc_object_t peer, xpc_object_t m, int nsxpc, const char *svc)
 
 			if (pg != 0) xpc_dictionary_set_value(r, "lsinfopage", xpc_shmem_create(pg, 61440));
 			xpc_dictionary_set_bool(r, "success", 1);
-		} else if (cmd == 200) {
-			xpc_object_t meta = xpc_dictionary_create(0, 0, 0);
+		} else if (cmd == 200) {		/* the meta information of the session: only the keys in "wanted" (the Mac: {wanted: [LSSessionID]} -> {metainfo: {LSSessionID: 100001}}, the audit session of the
+						 * client; HIServices' _RegisterApplication gives it to the window server in CreateApplication, which refuses a session id of 0); keys it does not know are left out */
+			xpc_object_t meta = xpc_dictionary_create(0, 0, 0), wanted = xpc_dictionary_get_value(m, "wanted");
+			unsigned long wi;
 
-			xpc_dictionary_set_int64(meta, "LSCGSSessionID", 257);
+			for (wi = 0; wanted && wi < xpc_array_get_count(wanted); wi++) {
+				const char *k = xpc_string_get_string_ptr(xpc_array_get_value(wanted, wi));
+
+				if (k && streq(k, "LSSessionID")) xpc_dictionary_set_int64(meta, k, xpc_connection_get_asid(peer));
+				else if (k && streq(k, "LSCGSSessionID")) xpc_dictionary_set_int64(meta, k, 257);
+			}
 			xpc_dictionary_set_value(r, "metainfo", meta);
 			xpc_dictionary_set_bool(r, "success", 1);
 		} else if (cmd == 300) {			/* the front application (_LSCopyFrontApplication when the shared page has none): the ASN as a number: 1 << 32 | the low part (100000 + pid, what the check-in below gives); the application that checked in last is in front */
