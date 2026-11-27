@@ -4,5 +4,5 @@
 set -e
 H="$(cd "$(dirname "$0")" && pwd)"; O="${1:-$H/out}"; mkdir -p "$O"
 for d in launchd notifyd wsbridge; do mkdir -p "$O/$d"; cp -R "$H/$d/." "$O/$d/"; (cd "$O/$d" && make "$d" >/dev/null) && echo "built $O/$d/$d"; done
-for d in lsd-stub svc-stub carender-stub tccd; do sh "$H/$d/build.sh" "$O/$d/out" >/dev/null && echo "built $O/$d/out/$d"; done
+for d in lsd-stub svc-stub carender-stub tccd opendirectoryd distnoted; do sh "$H/$d/build.sh" "$O/$d/out" >/dev/null && echo "built $O/$d/out/$d"; done
 echo "not built here: lsd-objc (Mac: clang -framework Foundation -framework CoreServices lsd.m), wm-stub (Mac)"
