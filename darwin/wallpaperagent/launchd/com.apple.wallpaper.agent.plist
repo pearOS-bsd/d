@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The user's WallpaperAgent (github.com/pearOS-bsd/d, darwin/wallpaperagent): the job of the Mac's /System/Library/LaunchAgents/com.apple.wallpaper.plist
+     (label com.apple.wallpaper.agent, run as the user, started at the first look-up).  Only com.apple.wallpaper is served; the Mac's job also has
+     com.apple.wallpaper.CacheDelete, com.apple.wallpaper.debug.service and a user-notification delegate name.  @USER@ = the console user. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.wallpaper.agent</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/pearos/WallpaperAgent</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.wallpaper</key>
+		<true/>
+	</dict>
+	<key>UserName</key>
+	<string>@USER@</string>
+</dict>
+</plist>
