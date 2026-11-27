@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- CarbonCore's named data store (github.com/pearOS-bsd/d, darwin/csnameddatad).  On the Mac it is not a launchd job but the XPC service
+     CarbonCore.framework/XPCServices/csnameddatad.xpc (CFBundleIdentifier com.apple.carboncore.csnameddata, ServiceType User: one instance per
+     user, reached with xpc_connection_create).  The launchd of d has no XPC service domain, so the service is a job of the user with the
+     bundle identifier as its Mach service name: CarbonCore's look-up finds it there.  @USER@ = the console user. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.carboncore.csnameddata</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/pearos/csnameddatad</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.carboncore.csnameddata</key>
+		<true/>
+	</dict>
+	<key>UserName</key>
+	<string>@USER@</string>
+</dict>
+</plist>

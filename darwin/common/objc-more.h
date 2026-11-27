@@ -6,6 +6,10 @@
 #import "objc-min.h"
 
 @class NSURL, NSDate, NSMutableArray, NSMutableSet;
+@interface NSObject (DMore)
+- (id)copy;
+- (id)mutableCopy;
+@end
 @interface NSString (DMore)
 - (BOOL)hasPrefix:(NSString *)s;
 - (NSString *)lowercaseString;
