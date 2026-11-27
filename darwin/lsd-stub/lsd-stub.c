@@ -80,6 +80,55 @@ static unsigned long front_pid;
  * (TransformProcessType / -[NSApplication setActivationPolicy:] sends the whole record with "ApplicationType" = "Foreground"), 360 reads keys (restrictto) or the whole record, 130 compares two ASNs */
 static struct { unsigned long pid; xpc_object_t rec; } recs[64];
 
+/* the info page (command 110, "lsinfopage"): one shared page for the session, written in place; the clients map it once (vm_remap, shared) and read
+ * it without asking again.  Layout (research/docs/LAUNCHSERVICES-WIRE.md 6.3, decompiled from LaunchServices LSSharedMemoryPage): a client drops a page
+ * whose version (+0) is not 0x104 or whose size (+4) is below 0xe460, and then asks for it again at every use.  Header as LSSharedMemoryPage(LSSessionID)
+ * makes it; one record of 0x48 bytes at 0x90 + i * 0x48 per checked-in application, at most 0x32a. */
+static unsigned int *infopage;
+
+static unsigned int *
+page_get(void)
+{
+	if (infopage == 0) {
+		void *p = mmap(0, 61440, 3, 0x1001, -1, 0);	/* MAP_ANON | MAP_SHARED */
+
+		if ((long)p == -1) return (0);
+		infopage = p;
+		infopage[0] = 0x104;		/* version */
+		infopage[1] = 61440;		/* size */
+		infopage[2] = 100001;		/* the session */
+		infopage[0x20 / 4] = infopage[0x24 / 4] = infopage[0x28 / 4] = 100;	/* the seeds start at 100 */
+		infopage[0x2c / 4] = infopage[0x30 / 4] = infopage[0x34 / 4] = 100;
+		infopage[0x68 / 4] = 257;	/* the session of the graphics server (the same as the answer to 200) */
+		infopage[0x8c / 4] = 0x32a;	/* the number of records that fit */
+	}
+	return (infopage);
+}
+
+/* a checked-in application: its record in the page (the ASN low half, the ChangeCount of its information, flags 0x80 = checked in, the pid) */
+static void
+page_add(unsigned int asnlo, unsigned int chg, unsigned int pid)
+{
+	unsigned int *pg = page_get(), n, i, *r;
+
+	if (pg == 0) return;
+	n = pg[0x88 / 4];
+	for (i = 0; i < n; i++)
+		if (pg[(0x90 + i * 0x48) / 4 + 4] == pid) break;
+	if (i == n) {
+		if (n >= 0x32a) return;
+		pg[0x88 / 4] = n + 1;
+		pg[0x28 / 4]++;			/* applicationListSeed */
+	}
+	r = pg + (0x90 + i * 0x48) / 4;
+	r[1] = 0;				/* +4 first to 0 and last to its value, as the daemon writes a record (LSSharedMemoryPage::SetApplicationInformation) */
+	r[0] = asnlo;
+	r[2] = 0x80;
+	r[4] = pid;
+	r[1] = chg;
+	pg[0x34 / 4]++;				/* applicationInformationSeed */
+}
+
 static xpc_object_t
 rec_by_asn(unsigned long asn)
 {
@@ -245,9 +294,9 @@ handle(xpc_object_t peer, xpc_object_t m, int nsxpc, const char *svc)
 			xpc_dictionary_set_bool(r, "success", 1);
 			xpc_dictionary_set_int64(r, "session", 100001);
 		} else if (cmd == 110) {
-			void *pg = mmap(0, 61440, 3, 0x1002, -1, 0);
+			void *pg = page_get();
 
-			if ((long)pg != -1) xpc_dictionary_set_value(r, "lsinfopage", xpc_shmem_create(pg, 61440));
+			if (pg != 0) xpc_dictionary_set_value(r, "lsinfopage", xpc_shmem_create(pg, 61440));
 			xpc_dictionary_set_bool(r, "success", 1);
 		} else if (cmd == 200) {
 			xpc_object_t meta = xpc_dictionary_create(0, 0, 0);
@@ -345,6 +394,7 @@ handle(xpc_object_t peer, xpc_object_t m, int nsxpc, const char *svc)
 			xpc_dictionary_set_int64(res, "ChangeCount", 1);
 			if (xpc_dictionary_get_value(res, "ApplicationType") == 0) xpc_dictionary_set_value(res, "ApplicationType", xpc_string_create("Foreground"));	/* an application whose information has none: the bundles of the lab programs */
 			rec_store((unsigned long)xpc_connection_get_pid(peer), xpc_copy(res));
+			page_add(100000 + xpc_connection_get_pid(peer), 1, xpc_connection_get_pid(peer));
 			xpc_dictionary_set_value(r, "result", res);
 			xpc_dictionary_set_bool(r, "success", 1);
 		} else if (cmd == 505) {

@@ -6,6 +6,14 @@ What the Dock sends (found with it): `command` 100 (check-in, `clientversion`: t
 
 The real `launchservicesd` of the Mac (run through the module) crashes in libxpc when a message that it sent cannot be answered (`_xpc_connection_call_reply_async` with no context); the stub does not need what it needs.
 
+## The info page (command 110)
+
+The answer to 110 is one shared page per session (`mmap` MAP_ANON|MAP_SHARED, 61440 bytes, made at the first 110 and sent again every time), with the header that LaunchServices checks (version 0x104 at +0, size at +4, session at +8, the seeds at 100, the CGS session 257 at +0x68, the capacity 0x32a at +0x8c) and one 72-byte record per check-in (ASN low half, ChangeCount, flags 0x80, pid).  An all-zero page is rejected by the client (it asks for 110 again at every use; that alone does not stop the check-in).  Layout and evidence: research/docs/LAUNCHSERVICES-WIRE.md 6.3.  Not done yet: records are never removed (no death notification), the front application, the front-to-back order and the hashes/inodes of a record are not written.
+
+The Dock abort "unable to get application ASN from launchservicesd ... requires an ASN" happens when the client's connection to this service becomes **invalid** (`XPC_ERROR_CONNECTION_INVALID`): LaunchServices then never connects again and sends no 500 (research/docs/LAUNCHSERVICES-WIRE.md 6.4, reproduced on the Mac VM with probes/fk.c).  If the Dock stops after 100, 110, 110, look for the stub dying or its service going away.
+
+Tested on the Mac VM: Apple's AppKit client (research probes/a.m) against this stub through `__LSXPCSERVICENAME` (LaunchAgent with MachServices) checks in, and the page it gets decodes as above (`probes/ip.c` + `infopage.py`).  Built on the FreeBSD lab VM with build.sh; not run on pearOS in this change.
+
 ## Check-in (command 500) and NSXPC
 
 - 500 (check-in of an application): the answer is `{success, result: <the info of the application + LSAuditToken, LSDisplayName, CFBundleExecutablePath, LSExecutableFilenameLowerCaseKey, BundleIdentifierLowerCase, CFBundleNameLowerCase, LSApplicationMemberCoalitionIDKey, pid, LSApplicationHasRegistered, ChangeCount, LSASN>}` (shape found by asking the daemon of the Mac with a program). `LSASN` must be a dictionary of three entries (`...asn.lo`, `...asn.hi` and `com.apple.coreservices.asn` = the marker uuid C96172A0-CE74-4D62-AFEF-ECFE4D04D827): LaunchServices reads only that form as a serial number; with another uuid the conversion returns NULL and the caller crashes in `CFDictionaryGetValue(NULL)`.
