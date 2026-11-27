@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!-- The Apple Event session server (github.com/pearOS-bsd/d, darwin/appleeventsd): the job of the Mac's /System/Library/LaunchDaemons/com.apple.coreservices.appleevents.plist
-     (appleeventsd --server, service com.apple.coreservices.appleevents, started at the first look-up).  The Mac runs it as _appleevents;
+     (appleeventsd with the argument "server" written with two dashes, service com.apple.coreservices.appleevents, started at the first look-up).  The Mac runs it as _appleevents;
      pearOS has no such account, so root.  The launchd of d reads it from /usr/libexec/pearos/jobs. -->
 <plist version="1.0">
 <dict>
