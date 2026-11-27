@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The uninstall service (github.com/pearOS-bsd/d, darwin/uninstalld): the job of the Mac's /System/Library/LaunchDaemons/com.apple.uninstalld.plist
+     (Uninstall.framework/Resources/uninstalld, root, started at the first look-up).  Only com.apple.uninstall.service is served here; the Mac's
+     job also has com.apple.uninstalld (the old Mach interface).  The launchd of d reads it from /usr/libexec/pearos/jobs. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.uninstalld</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/pearos/uninstalld</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.uninstall.service</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
