@@ -1,0 +1,9 @@
+--- !tapi-tbd
+tbd-version:     4
+targets:         [ x86_64-macos ]
+install-name:    '/usr/lib/libSystem.B.dylib'
+current-version: 1351
+exports:
+  - targets:         [ x86_64-macos ]
+    symbols:         [ _dispatch_main, _dispatch_queue_create, dyld_stub_binder, _free, _malloc, _notify_post, __NSConcreteGlobalBlock, __NSConcreteStackBlock, _write, _xpc_array_append_value, _xpc_array_create, _xpc_array_get_count, _xpc_array_get_uint64, _xpc_array_get_value, _xpc_connection_cancel, _xpc_connection_create_mach_service, _xpc_connection_get_pid, _xpc_connection_resume, _xpc_connection_send_message, _xpc_connection_set_event_handler, _xpc_connection_set_target_queue, _xpc_copy, _xpc_dictionary_create, _xpc_dictionary_get_string, _xpc_dictionary_get_uint64, _xpc_dictionary_get_value, _xpc_dictionary_set_string, _xpc_dictionary_set_uint64, _xpc_dictionary_set_value, _xpc_get_type, _xpc_release, __xpc_type_array, __xpc_type_dictionary, __NSConcreteGlobalBlock, __Block_object_assign, __Block_object_dispose ]
+...

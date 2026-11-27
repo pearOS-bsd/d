@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The user's distnoted (github.com/pearOS-bsd/d, darwin/distnoted): the job of the Mac's /System/Library/LaunchAgents/com.apple.distnoted.xpc.agent.plist
+     (argument "agent", service com.apple.distributed_notifications@Uv3, run as the user, started at the first look-up).  @USER@ = the console user. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.distnoted.xpc.agent</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/pearos/distnoted</string>
+		<string>agent</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.distributed_notifications@Uv3</key>
+		<true/>
+	</dict>
+	<key>UserName</key>
+	<string>@USER@</string>
+</dict>
+</plist>
