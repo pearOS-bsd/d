@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The user's WindowManager (github.com/pearOS-bsd/d, darwin/windowmanager): the job of the Mac's /System/Library/LaunchAgents/com.apple.WindowManager.plist
+     (label com.apple.WindowManager.agent, run as the user, started at the first look-up).  Only com.apple.windowmanager.external is served here;
+     the Mac's job also has com.apple.windowmanager.server (darwin/wm-stub) and com.apple.windowmanager.dragserver.  @USER@ = the console user. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.WindowManager.agent</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/pearos/WindowManager</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.windowmanager.external</key>
+		<true/>
+	</dict>
+	<key>UserName</key>
+	<string>@USER@</string>
+</dict>
+</plist>
