@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The user's dmd (github.com/pearOS-bsd/d, darwin/dmd): the job of the Mac's /System/Library/LaunchAgents/com.apple.dmd.agent.plist
+     (label com.apple.dmd, /usr/libexec/dmd, run as the user in the Aqua session, started at the first look-up).  Only com.apple.dmd.policy is
+     served here; the Mac's job also has com.apple.dmd and com.apple.dmd.emergency-mode and launch events.  @USER@ = the console user. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.dmd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/pearos/dmd</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.dmd.policy</key>
+		<true/>
+	</dict>
+	<key>UserName</key>
+	<string>@USER@</string>
+</dict>
+</plist>
