@@ -1,0 +1,33 @@
+name: dock-services
+on:
+  push:
+    paths: ['darwin/windowmanager/**', 'darwin/wallpaperagent/**', 'darwin/common/**', '.github/workflows/dock-services.yml']
+  pull_request:
+    paths: ['darwin/windowmanager/**', 'darwin/wallpaperagent/**', 'darwin/common/**', '.github/workflows/dock-services.yml']
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang and lld
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+      - name: Build the Mach-O daemons
+        run: |
+          export CC=clang LD64=$(ls /usr/lib/llvm-*/bin/ld64.lld | tail -1)
+          sh darwin/windowmanager/build.sh out
+          sh darwin/wallpaperagent/build.sh out
+      - name: Check the binaries and the jobs
+        run: |
+          OD=$(ls /usr/lib/llvm-*/bin/llvm-objdump | tail -1)
+          for b in WindowManager WallpaperAgent; do
+            file out/$b | grep -q 'Mach-O 64-bit x86_64 executable'
+            $OD --macho --dylibs-used out/$b | tee dylibs.txt
+            grep -q 'Foundation.framework/Versions/C/Foundation' dylibs.txt
+            grep -q 'libobjc.A.dylib' dylibs.txt
+          done
+          # the protocol and the coder keys the Mac's WindowManager.framework uses (research/docs/DOCK-WINDOWMANAGER-WALLPAPER.md 4.1)
+          strings out/WindowManager | grep -q 'xpcBeginDesktopPeekMonitor:completion:'
+          strings out/WindowManager | grep -q 'WMXPCDPMID'
+          strings out/WindowManager | grep -q '_TtC13WindowManager37WindowManagerXPCTilingPositionRequest'
+          strings out/WallpaperAgent | grep -q 'AgentXPCMessage'
+          for p in darwin/windowmanager/launchd/*.plist darwin/wallpaperagent/launchd/*.plist; do python3 -c "import plistlib,sys; d=plistlib.load(open(sys.argv[1],'rb')); assert d['Label'] and d['MachServices']" "$p"; done
