@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The user's usernoted (github.com/pearOS-bsd/d, darwin/usernoted): the job of the Mac's /System/Library/LaunchAgents/com.apple.usernoted.plist
+     (label com.apple.usernoted, /usr/sbin/usernoted, run as the user, RunAtLoad + KeepAlive).  Only com.apple.usernoted.dock is served here (the Dock's
+     badges); the Mac's job also has usernoted.client, .multi_client, .daemon_client, .notificationcenter, .prefs, .push, .events, .test and the
+     usernotifications services.  @USER@ = the console user. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.usernoted</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/pearos/usernoted</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.usernoted.dock</key>
+		<true/>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>UserName</key>
+	<string>@USER@</string>
+</dict>
+</plist>

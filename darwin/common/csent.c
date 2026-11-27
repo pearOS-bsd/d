@@ -14,9 +14,9 @@ extern int proc_pidpath(int pid, void *buf, unsigned int size);
 static unsigned int be32(const unsigned char *p) { return (unsigned int)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; }
 static unsigned int le32(const unsigned char *p) { return (unsigned int)p[3] << 24 | p[2] << 16 | p[1] << 8 | p[0]; }
 
-/* the XML entitlements of an executable (malloc'd, NUL-terminated) or 0 */
+/* the XML entitlements of an executable (malloc'd, NUL-terminated) or 0; with ident != 0 also the signing identifier of its CodeDirectory (slot 0) */
 static char *
-read_entitlements(const char *path)
+read_signature(const char *path, char *ident, unsigned int identsz)
 {
 	enum { HSZ = 65536 };
 	unsigned char *h = malloc(HSZ), *sb = 0;
@@ -45,12 +45,19 @@ read_entitlements(const char *path)
 	for (i = 0; i < n && 12 + i * 8 + 8 <= sz; i++) {
 		unsigned int ty = be32(sb + 12 + i * 8), bo = be32(sb + 12 + i * 8 + 4), bl, k;
 
-		if (ty != 5 || bo + 8 > sz) continue;
+		if (bo + 8 > sz) continue;
 		bl = be32(sb + bo + 4);
-		if (bl > sz - bo || bl < 8 || be32(sb + bo) != 0xfade7171 || (ents = malloc(bl - 8 + 1)) == 0) continue;
+		if (bl > sz - bo || bl < 8) continue;
+		if (ty == 0 && ident && identsz && be32(sb + bo) == 0xfade0c02 && bl > 24) {	/* CodeDirectory: identOffset at +20 */
+			unsigned int io = be32(sb + bo + 20);
+
+			for (k = 0; io + k < bl && k + 1 < identsz && sb[bo + io + k]; k++) ident[k] = (char)sb[bo + io + k];
+			ident[k] = 0;
+			continue;
+		}
+		if (ty != 5 || ents || be32(sb + bo) != 0xfade7171 || (ents = malloc(bl - 8 + 1)) == 0) continue;
 		for (k = 0; k < bl - 8; k++) ents[k] = (char)sb[bo + 8 + k];
 		ents[bl - 8] = 0;
-		break;
 	}
 done:
 	free(sb);
@@ -80,7 +87,7 @@ csent_bool(int pid, const char *key)
 	size_t i = 0, j;
 	int r = 0;
 
-	if (pid <= 0 || proc_pidpath(pid, path, sizeof path) <= 0 || (ents = read_entitlements(path)) == 0) return 0;
+	if (pid <= 0 || proc_pidpath(pid, path, sizeof path) <= 0 || (ents = read_signature(path, 0, 0)) == 0) return 0;
 	for (j = 0; "<key>"[j]; j++) k[i++] = "<key>"[j];
 	for (j = 0; key[j] && i < 240; j++) k[i++] = key[j];
 	for (j = 0; "</key>"[j]; j++) k[i++] = "</key>"[j];
@@ -92,4 +99,15 @@ csent_bool(int pid, const char *key)
 	}
 	free(ents);
 	return r;
+}
+
+int
+csent_identifier(int pid, char *ident, unsigned int size)
+{
+	char path[1024];
+
+	if (size) ident[0] = 0;
+	if (pid <= 0 || size == 0 || proc_pidpath(pid, path, sizeof path) <= 0) return 0;
+	free(read_signature(path, ident, size));
+	return ident[0] != 0;
 }
