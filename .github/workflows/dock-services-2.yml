@@ -1,0 +1,41 @@
+name: dock-services-2
+on:
+  push:
+    paths: ['darwin/usernoted/**', 'darwin/appleeventsd/**', 'darwin/analyticsd/**', 'darwin/filecoordinationd/**', 'darwin/csnameddatad/**', 'darwin/dmd/**', 'darwin/useractivityd/**', 'darwin/uninstalld/**', 'darwin/common/**', '.github/workflows/dock-services-2.yml']
+  pull_request:
+    paths: ['darwin/usernoted/**', 'darwin/appleeventsd/**', 'darwin/analyticsd/**', 'darwin/filecoordinationd/**', 'darwin/csnameddatad/**', 'darwin/dmd/**', 'darwin/useractivityd/**', 'darwin/uninstalld/**', 'darwin/common/**', '.github/workflows/dock-services-2.yml']
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang and lld
+        run: sudo apt-get update -q && sudo apt-get install -y -q clang lld llvm
+      - name: Build the Mach-O daemons
+        run: |
+          export CC=clang LD64=$(ls /usr/lib/llvm-*/bin/ld64.lld | tail -1)
+          for d in usernoted appleeventsd analyticsd filecoordinationd csnameddatad dmd useractivityd uninstalld; do sh darwin/$d/build.sh out; done
+      - name: Check the binaries and the jobs
+        run: |
+          OD=$(ls /usr/lib/llvm-*/bin/llvm-objdump | tail -1)
+          for b in usernoted appleeventsd analyticsd filecoordinationd csnameddatad dmd useractivityd uninstalld; do
+            file out/$b | grep -q 'Mach-O 64-bit x86_64 executable'
+            $OD --macho --dylibs-used out/$b | grep -q 'libSystem.B.dylib'
+          done
+          # the wire names and selectors of Apple's protocols (research/docs/DOCK-SERVICES-2.md)
+          strings out/usernoted | grep -q 'com.apple.usernoted.isAlive'
+          strings out/usernoted | grep -q 'bundle_identifiers'
+          strings out/appleeventsd | grep -q 'supressOAPP'
+          strings out/appleeventsd | grep -q 'com.apple.coreservices.appleevents.startup'
+          strings out/analyticsd | grep -q 'not entitled'
+          strings out/filecoordinationd | grep -q 'addSubscriber:forID:appBundleID:fileURL:completionHandler:'
+          strings out/filecoordinationd | grep -q 'addPublisher:forID:withValues:isOld:'
+          strings out/csnameddatad | grep -q 'getNamedData:withReply:'
+          strings out/dmd | grep -q 'com.apple.private.dmd.policy'
+          strings out/dmd | grep -q 'addRegistration:replyHandler:'
+          strings out/useractivityd | grep -q 'doRegisterForBestAppChangeNotification'
+          strings out/uninstalld | grep -q 'queueRequest:withPriority:reply:'
+          for p in darwin/{usernoted,appleeventsd,analyticsd,filecoordinationd,csnameddatad,dmd,useractivityd,uninstalld}/launchd/*.plist; do python3 -c "import plistlib,sys; d=plistlib.load(open(sys.argv[1],'rb')); assert d['Label'] and d['MachServices']" "$p"; done
