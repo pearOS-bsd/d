@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The system instance of tccd (github.com/pearOS-bsd/d, darwin/tccd): the job of the Mac's /System/Library/LaunchDaemons/com.apple.tccd.system.plist
+     (argument "system", service com.apple.tccd.system, root, started at the first look-up).  The launchd of d reads it from /usr/libexec/pearos/jobs. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.tccd.system</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/pearos/tccd</string>
+		<string>system</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.tccd.system</key>
+		<true/>
+	</dict>
+</dict>
+</plist>

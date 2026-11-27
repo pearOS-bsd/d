@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The user's instance of tccd (github.com/pearOS-bsd/d, darwin/tccd): the job of the Mac's /System/Library/LaunchAgents/com.apple.tccd.plist
+     (service com.apple.tccd, run as the user, started at the first look-up).  @USER@ = the console user; HOME through env (the launchd of d has no
+     EnvironmentVariables yet): the user's TCC.db is ~/Library/Application Support/com.apple.TCC/TCC.db. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.tccd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/env</string>
+		<string>HOME=/Users/@USER@</string>
+		<string>/usr/libexec/pearos/tccd</string>
+		<string>user</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.tccd</key>
+		<true/>
+	</dict>
+	<key>UserName</key>
+	<string>@USER@</string>
+</dict>
+</plist>

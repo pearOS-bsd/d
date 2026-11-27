@@ -1,0 +1,13 @@
+# tccd
+
+The daemon of Transparency, Consent and Control for pearOS, wire compatible with the `tccd` of macOS 26.7.2: Apple's libTCC (TCC.framework: `TCCAccessPreflight`, `TCCAccessRequest`, `TCCAccessCheckAuditToken`, `TCCAccessPreflightWithAuditToken`, the `tcc_server` SPI that SkyLight uses) gets the replies the Mac gives, so `SLSInitialize` and the apps no longer wait for ever on `com.apple.tccd.system`.  Plain C, no Apple header; built on FreeBSD with clang + ld64.lld like `lsd-stub`.  The protocol and the evidence: `research/docs/TCC-WIRE.md`.
+
+- `tccd system`: `com.apple.tccd.system` (root, the system TCC.db).  `tccd` / `tccd user`: `com.apple.tccd` (as the user, `~/Library/Application Support/com.apple.TCC/TCC.db`).  `tccd both`: both in one process (the lab).  `system=NAME` / `user=NAME`: an instance under another name (tests on a Mac).
+- `tccd -check PATH SERVICE [DB]`: the decision for an executable without a client (prints its signing identifier, the size of its entitlements and the preflight answer).
+- Jobs for the launchd of d: `launchd/com.apple.tccd.system.plist` and `launchd/com.apple.tccd.plist` (`@USER@` = the console user), the Mac's jobs with our program (`/usr/libexec/pearos/tccd`); both start at the first look-up.
+
+Policy (Apple's order): an unknown service name gets `auth_error_code` 2; the entitlement `com.apple.private.tcc.allow` of the subject's code signature allows (auth_reason 11); else a row of the `access` table of TCC.db (Apple's SQLite file and schema, matched by signing identifier or path); else what a Mac answers with no row (unknown for a preflight, a fixed answer for the services with a service policy, denied for a request because there is no consent prompt yet).  Other functions get `{}`, Apple's answer to a caller it does not serve; every message that has a reply port gets a reply.  Every request is logged on stderr (`tccd: pid ... service: auth_value N auth_reason M`).
+
+Build: `sh build.sh OUTDIR` (FreeBSD: llvm21; elsewhere `CC=clang LD64=ld64.lld sh build.sh OUTDIR`; CI: `.github/workflows/tccd.yml`).  libsqlite3 is linked weakly (from the dyld cache of the Mac).
+
+Tested: on the Mac VM, Apple's libTCC against this daemon (names redirected with `IconServices/test/redirect.c`, probes in `research/tools/tcc/`) gives the same results as Apple's tccd for the same process; on the FreeBSD lab VM our launchd starts both jobs on demand and the Mac's libTCC gets its answers.  Not yet: on pearOS TCC.db cannot be read (darwinator answers EINVAL to the `fcntl` OFD locks that Apple's SQLite takes: SQLite reports "disk I/O error", the other rules still answer); `csreq` of a row is not checked; no consent prompt; no TCCAccessSet/Reset; no `clients` for TCCAccessCopyInformation.
