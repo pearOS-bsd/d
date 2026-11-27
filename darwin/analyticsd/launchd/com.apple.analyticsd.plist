@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The CoreAnalytics event server (github.com/pearOS-bsd/d, darwin/analyticsd): the job of the Mac's /System/Library/LaunchDaemons/com.apple.analyticsd.plist
+     (CoreAnalytics.framework/Support/analyticsd, started at the first look-up).  Only com.apple.analyticsd is served here; the Mac's job also has
+     com.apple.analyticsd.messagetracer (libsystem_asl).  The Mac runs it as _analyticsd; pearOS has no such account, so root.
+     The launchd of d reads it from /usr/libexec/pearos/jobs. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.analyticsd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/pearos/analyticsd</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.analyticsd</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
