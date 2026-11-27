@@ -1,5 +1,7 @@
 # lsd-stub
 
+**Replaced for `com.apple.coreservices.launchservicesd`** by the real daemon of LaunchServices (`LaunchServices/launchservicesd`, wire-compatible with the Mac's, installed as `/usr/libexec/pearos/launchservicesd` with the job `LaunchServices/launchd/com.apple.coreservices.launchservicesd.plist`).  Started without names, the stub leaves that name alone when `/usr/libexec/pearos/launchservicesd` exists (`LSD_STUB_LAUNCHSERVICESD=1` takes it anyway); started with names (`xpc-stub NAME ...`) it still serves the other stand-ins (RunningBoard, opendirectoryd libinfo, pasteboard, pkd, ...).  The notes below describe the stub's own launchservicesd part, kept for history.
+
 A stand-in for `launchservicesd` (the first of the replacements for what comes from the Mac).  A Mach-O program built on FreeBSD (`sh build.sh OUT`, clang + ld64.lld, no Apple header) that takes the service `com.apple.coreservices.launchservicesd` through launchd and answers the XPC messages of LaunchServices clients; it prints every message (libxpc's description) to stderr.
 
 What the Dock sends (found with it): `command` 100 (check-in, `clientversion`: the answer needs `serverversion`), 110, 360 (`restrictto`, `asn`), 410 (`listener` endpoint, `addasn`), 200, 500, 505; all with `session` (100000 for the user, -2 for the session of the process).  Only 100 has an answer with content for now.

@@ -463,6 +463,7 @@ od_num(const char *s)
 }
 /* the home directory that libinfo gets: the real one of /etc/passwd would make cfprefsd (the daemon) read and watch the preferences of the user, and it dies of a null call (`FSEventStreamCreate`, SIGSEGV at address 0, measured 2026-11-23: with /Users/alex the daemon is gone after the first client, with /var/empty it never touches the user's files).  Until FSEvents works the user's home is /var/empty (set LSD_OD_REAL_HOME=1 in the environment of lsd-stub to give the real one). */
 extern char *getenv(const char *name);
+extern int access(const char *path, int mode);
 static const char *
 od_home(const char *real)
 {
@@ -581,6 +582,12 @@ main(int argc, char **argv)
 	dq q = dispatch_queue_create("lsd-stub", 0);
 	int i;
 
+	/* without names the stub was the LaunchServices daemon; LaunchServices/launchservicesd replaces that part: when it is installed the stub
+	 * leaves the name to it (LSD_STUB_LAUNCHSERVICESD=1 takes it anyway) */
+	if (argc == 1 && access("/usr/libexec/pearos/launchservicesd", 1) == 0 && getenv("LSD_STUB_LAUNCHSERVICESD") == 0) {
+		out("lsd-stub: /usr/libexec/pearos/launchservicesd is installed: com.apple.coreservices.launchservicesd is left to it\n");
+		dispatch_main();
+	}
 	/* one listener for each name on the command line (several services in one process: every process of the Mac costs memory here); no name: the LaunchServices daemon */
 	for (i = 1; i < (argc > 1 ? argc : 2); i++) {
 		xpc_object_t svc = xpc_connection_create_mach_service(argc > 1 ? argv[i] : "com.apple.coreservices.launchservicesd", q, 1);
