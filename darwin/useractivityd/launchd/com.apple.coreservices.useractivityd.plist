@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The user's useractivityd (github.com/pearOS-bsd/d, darwin/useractivityd): the job of the Mac's /System/Library/LaunchAgents/com.apple.coreservices.useractivityd.plist
+     (UserActivity.framework/Agents/useractivityd, run as the user, started at the first look-up).  Only com.apple.coreservices.lsbestappsuggestionmanager.xpc
+     is served here; the Mac's job also has lsuseractivitymanager.xpc, lsuseractivityadministration.xpc, the shared pasteboard services and
+     lsuseractivity.simulatorsupport.  @USER@ = the console user. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.coreservices.useractivityd</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/pearos/useractivityd</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.coreservices.lsbestappsuggestionmanager.xpc</key>
+		<true/>
+	</dict>
+	<key>UserName</key>
+	<string>@USER@</string>
+</dict>
+</plist>
