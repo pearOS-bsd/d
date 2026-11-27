@@ -1,0 +1,9 @@
+# filecoordinationd
+
+The progress registry of pearOS, wire compatible with `com.apple.ProgressReporting` of macOS 26.7.2 (`/usr/sbin/filecoordinationd`): Foundation's `NSProgress` publishers (`-publish`) and subscribers (`+addSubscriberForFileURL:withPublishingHandler:`, the Dock's Downloads stack) meet here.  Objective-C on the runtime Foundation, no SDK (`../common/objc-more.h`, `../common/build-objc.sh`).  Evidence: `research/docs/DOCK-SERVICES-2.md` (section 3).
+
+- NSXPC protocol `NSProgressRegistrar` (7 methods; our declaration, Apple's selectors and signatures), callbacks `NSProgressSubscriber` / `NSProgressPublisher`.  A subscriber's completion is answered at once (the Dock waits for it: the call is synchronous), a publisher's with a nil set.
+- A publisher goes to every subscriber of its file URL, of the directory that holds it, or of its category, with an object of the registry that passes the subscriber's cancel / pause / resume / prioritize on to the publisher (Apple's subscriber also gets a registry-side proxy) and the publisher's `NSProgressValues`; `isOld` says whether it was there before the subscriber; the publisher's changes and its removal are forwarded; a client that goes away loses its publishers and subscriptions.
+- `filecoordinationd [service-name]`, `FC_LOG=1` logs.  Job: `launchd/com.apple.FileCoordination.plist` (root, as on the Mac).  Not here: `com.apple.FileCoordination` (NSFileCoordinator).
+
+Build: `sh build.sh OUTDIR`.  Tested on the Mac VM: Apple's Foundation as subscriber and publisher against this daemon (job `com.pearos.t.fcd`, a LaunchDaemon: Foundation looks the registry up in the system domain) gives the same subscriber messages as Apple's daemon (decoded NSXPC payloads identical but for the UUIDs), probes in `research/tools/dock-services-2`.

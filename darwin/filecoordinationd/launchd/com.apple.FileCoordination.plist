@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The progress registry (github.com/pearOS-bsd/d, darwin/filecoordinationd): the job of the Mac's /System/Library/LaunchDaemons/com.apple.FileCoordination.plist
+     (label com.apple.FileCoordination, /usr/sbin/filecoordinationd, root, started at the first look-up).  Only com.apple.ProgressReporting is served
+     here; the Mac's job also has com.apple.FileCoordination (NSFileCoordinator) and the host special port 30 (the kernel's file coordination).
+     The launchd of d reads it from /usr/libexec/pearos/jobs. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.FileCoordination</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/pearos/filecoordinationd</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.ProgressReporting</key>
+		<true/>
+	</dict>
+</dict>
+</plist>
