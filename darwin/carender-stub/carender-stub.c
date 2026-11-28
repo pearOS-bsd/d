@@ -45,7 +45,7 @@ static void ca_connect(void)
  * bytes: a header of 0x1d8 bytes, then one slot of 0xa0 bytes per image; CAImageQueueInsertImage_, decompiled: a slot is free while its u32 at 0x44 (the kind: 3 a registered buffer, 4 an IOSurface id) is 0,
  * the kind is written last; the IOSurface's id is at 0x38, the order of the inserts at 0x64 (from the header's counter at 0x24)).  The render server reads the newest image of every queue each frame; here this
  * stub keeps the queue's memory mapped (WindowServer names it with a type 10 record when it decodes the ImageQueue object of a layer: message number, descriptor, capacity), finds the newest slot and sends
- * its IOSurface id to WindowServer (type 5: message number, descriptor, IOSurface id, order), which maps the surface through /dev/iosurface.  The older images are given back (their kind cleared).
+ * its IOSurface id to WindowServer (type 5: message number, descriptor, IOSurface id, order), which maps the surface through /dev/iosurface.  The older images are given back (their state at 0x3c set to released).
  */
 static void hex(u64 v, int digits);
 static void ca_send(u32 type, const void *a, u32 alen, const void *b, u32 blen);
@@ -53,6 +53,7 @@ static struct { u32 msg, desc; u64 ad, sz; } recent[64];		/* the shared memories
 static u32 nrecent;
 static struct { u32 msg, desc, cap, lastsid, lastseq; u64 ad, sz; } watch[16];
 static u32 nwatch;
+static u32 qdebug;
 static void keep_recent(u32 msg, u32 desc, u64 ad, u64 sz)
 {
 	u32 i = nrecent % 64;
@@ -106,15 +107,25 @@ static void scan_queues(void)
 
 			if (kind != 0 && *(u32 *)(sl + 0x38) != 0 && (best == 0xffffffffu || (int)(seq - bseq) > 0)) { best = i; bseq = seq; }
 		}
+		if (qdebug && (qdebug++ % 125) == 1) {	/* CARENDER_QDEBUG=1: the queue's slots every second or so */
+			out("carender-stub: queue "); hex(watch[q].msg, 4); out(" counter "); hex(*(u32 *)(base + 0x24), 8); out(":");
+			for (i = 0; i < watch[q].cap; i++) { unsigned char *sl = base + 0x1d8 + (u64)i * 0xa0; out(" ["); hex(*(u32 *)(sl + 0x44), 2); out(" "); hex(*(u32 *)(sl + 0x38), 4); out(" "); hex(*(u32 *)(sl + 0x64), 4); out("]"); }
+			out("\n");
+		}
 		if (best == 0xffffffffu) continue;
 		{
 			unsigned char *sl = base + 0x1d8 + (u64)best * 0xa0;
 			u32 sid = *(u32 *)(sl + 0x38);
 
-			for (i = 0; i < watch[q].cap; i++) {	/* the older images are done with: given back to the client */
+			/* the state of an image at 0x3c (_CAImageQueueCollect_, decompiled): 0 queued, 0x11111111 being shown, 0x22222222 released after it was shown, 0x33333333 released unshown; the client takes the
+			 * released ones back (release_image: the drawable is free again) and clears their kind itself */
+			if (*(volatile u32 *)(sl + 0x3c) == 0) *(volatile u32 *)(sl + 0x3c) = 0x11111111;
+			for (i = 0; i < watch[q].cap; i++) {
 				unsigned char *o = base + 0x1d8 + (u64)i * 0xa0;
+				u32 st = *(volatile u32 *)(o + 0x3c);
 
-				if (i != best && *(volatile u32 *)(o + 0x44) != 0 && (int)(*(u32 *)(o + 0x64) - bseq) < 0) *(volatile u32 *)(o + 0x44) = 0;
+				if (i != best && *(volatile u32 *)(o + 0x44) != 0 && (int)(*(u32 *)(o + 0x64) - bseq) < 0 && (st == 0 || st == 0x11111111))
+					*(volatile u32 *)(o + 0x3c) = st == 0x11111111 ? 0x22222222 : 0x33333333;
 			}
 			if (sid != watch[q].lastsid || bseq != watch[q].lastseq) {
 				u32 rec[4];
@@ -290,6 +301,7 @@ main(void)
 	mach_port_allocate(mach_task_self_, 1, &p2); mach_port_insert_right(mach_task_self_, p2, p2, 20); mach_port_insert_member(mach_task_self_, p2, set);
 	/* CARENDER_TRACE=1: every message and its words go to the output, the command streams to /tmp/ca.bin and the out-of-line data to /tmp/ca-ool-*.bin (a debugging aid: on a machine with a small /tmp it fills it in seconds, and the output of every commit is a lot of work) */
 	int trace = getenv("CARENDER_TRACE") != 0;
+	qdebug = getenv("CARENDER_QDEBUG") != 0;
 	for (;;) {
 		kr = mach_msg(buf, 2 | (ndelay || nwatch || cafd >= 0 ? 0x100 : 0) | 0x100000 /* RCV_MSG | RCV_TIMEOUT (while a cfmr is waiting, image queues are watched, WindowServer may ask) | RCV_LARGE */ | 0x03000000 /* the audit trailer: who sent it */, 0, sizeof(buf), set, ndelay ? 200 : nwatch ? 8 : 50, 0);
 		flush_delayed();
