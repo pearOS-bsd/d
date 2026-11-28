@@ -23,6 +23,7 @@ extern int socket(int, int, int);
 extern int connect(int, const void *, unsigned int);
 extern void *signal(int, void *);
 extern int close(int);
+extern long recv(int fd, void *buf, unsigned long n, int flags);
 /* the commits also go to WindowServer (the render server of the window server: src/sls_carender.c) on a stream socket: records u32 type, u32 length, payload (1: a commit message, 2: u32 message number, u32 descriptor and the out-of-line bytes) */
 static int cafd = -1;
 static void ca_connect(void)
@@ -37,6 +38,93 @@ static void ca_connect(void)
 	sa.len = sizeof(sa); sa.family = 1;
 	cafd = socket(1, 1, 0);			/* AF_UNIX, SOCK_STREAM */
 	if (cafd >= 0 && connect(cafd, &sa, sizeof(sa)) != 0) { close(cafd); cafd = -1; }
+}
+
+/*
+ * Image queues (CAImageQueue: CAMetalLayer, AVPlayerLayer, ...).  The client writes its images into a shared memory (CA::Render::ImageQueue::decode, decompiled: a Shmem of at least 0x1d8 + capacity * 0xa0
+ * bytes: a header of 0x1d8 bytes, then one slot of 0xa0 bytes per image; CAImageQueueInsertImage_, decompiled: a slot is free while its u32 at 0x44 (the kind: 3 a registered buffer, 4 an IOSurface id) is 0,
+ * the kind is written last; the IOSurface's id is at 0x38, the order of the inserts at 0x64 (from the header's counter at 0x24)).  The render server reads the newest image of every queue each frame; here this
+ * stub keeps the queue's memory mapped (WindowServer names it with a type 10 record when it decodes the ImageQueue object of a layer: message number, descriptor, capacity), finds the newest slot and sends
+ * its IOSurface id to WindowServer (type 5: message number, descriptor, IOSurface id, order), which maps the surface through /dev/iosurface.  The older images are given back (their kind cleared).
+ */
+static void hex(u64 v, int digits);
+static void ca_send(u32 type, const void *a, u32 alen, const void *b, u32 blen);
+static struct { u32 msg, desc; u64 ad, sz; } recent[64];		/* the shared memories of the last commits, kept mapped for a while: one of them may be a queue */
+static u32 nrecent;
+static struct { u32 msg, desc, cap, lastsid, lastseq; u64 ad, sz; } watch[16];
+static u32 nwatch;
+static void keep_recent(u32 msg, u32 desc, u64 ad, u64 sz)
+{
+	u32 i = nrecent % 64;
+
+	if (nrecent >= 64 && recent[i].ad) mach_vm_deallocate(mach_task_self_, recent[i].ad, recent[i].sz);
+	recent[i].msg = msg; recent[i].desc = desc; recent[i].ad = ad; recent[i].sz = sz;
+	nrecent++;
+}
+static void ca_requests(void)
+{
+	static unsigned char rb[256];
+	static u32 rn;
+	long got;
+
+	if (cafd < 0) return;
+	while (rn < sizeof(rb) && (got = recv(cafd, rb + rn, sizeof(rb) - rn, 0x80 /* MSG_DONTWAIT: the socket stays blocking for the commits it carries */)) > 0) rn += (u32)got;
+	while (rn >= 8) {
+		u32 type = *(u32 *)rb, len = *(u32 *)(rb + 4), i;
+
+		if (8 + len > sizeof(rb)) { rn = 0; break; }
+		if (rn < 8 + len) break;
+		if (type == 10 && len >= 12 && nwatch < 16) {
+			u32 m = *(u32 *)(rb + 8), d = *(u32 *)(rb + 12), cap = *(u32 *)(rb + 16);
+
+			for (i = 0; i < 64 && i < nrecent; i++)
+				if (recent[i].ad && recent[i].msg == m && recent[i].desc == d) {
+					if (recent[i].sz >= 0x1d8 + (u64)cap * 0xa0) {
+						watch[nwatch].msg = m; watch[nwatch].desc = d; watch[nwatch].cap = cap; watch[nwatch].ad = recent[i].ad; watch[nwatch].sz = recent[i].sz;
+						watch[nwatch].lastsid = 0; watch[nwatch].lastseq = 0; nwatch++;
+						recent[i].ad = 0;		/* the queue's mapping is the watch's now */
+						out("carender-stub: watching image queue "); hex(m, 4); out("/"); hex(d, 2); out(" capacity "); hex(cap, 4); out("\n");
+					}
+					break;
+				}
+		}
+		for (i = 8 + len; i < rn; i++) rb[i - 8 - len] = rb[i];
+		rn -= 8 + len;
+	}
+}
+static void scan_queues(void)
+{
+	u32 q, i;
+
+	for (q = 0; q < nwatch; q++) {
+		unsigned char *base = (unsigned char *)watch[q].ad;
+		u32 best = 0xffffffffu, bseq = 0;
+
+		for (i = 0; i < watch[q].cap; i++) {
+			unsigned char *sl = base + 0x1d8 + (u64)i * 0xa0;
+			u32 kind = *(volatile u32 *)(sl + 0x44), seq = *(u32 *)(sl + 0x64);
+
+			if (kind != 0 && *(u32 *)(sl + 0x38) != 0 && (best == 0xffffffffu || (int)(seq - bseq) > 0)) { best = i; bseq = seq; }
+		}
+		if (best == 0xffffffffu) continue;
+		{
+			unsigned char *sl = base + 0x1d8 + (u64)best * 0xa0;
+			u32 sid = *(u32 *)(sl + 0x38);
+
+			for (i = 0; i < watch[q].cap; i++) {	/* the older images are done with: given back to the client */
+				unsigned char *o = base + 0x1d8 + (u64)i * 0xa0;
+
+				if (i != best && *(volatile u32 *)(o + 0x44) != 0 && (int)(*(u32 *)(o + 0x64) - bseq) < 0) *(volatile u32 *)(o + 0x44) = 0;
+			}
+			if (sid != watch[q].lastsid || bseq != watch[q].lastseq) {
+				u32 rec[4];
+
+				rec[0] = watch[q].msg; rec[1] = watch[q].desc; rec[2] = sid; rec[3] = bseq;
+				watch[q].lastsid = sid; watch[q].lastseq = bseq;
+				ca_send(5, rec, 16, 0, 0);
+			}
+		}
+	}
 }
 
 /* the shared memory of a commit (CA::Shmem: the pixels of an Image) arrives as a memory-entry port: map it, and send the bytes like out-of-line data.  The size of an entry is not asked of anybody (the
@@ -203,8 +291,10 @@ main(void)
 	/* CARENDER_TRACE=1: every message and its words go to the output, the command streams to /tmp/ca.bin and the out-of-line data to /tmp/ca-ool-*.bin (a debugging aid: on a machine with a small /tmp it fills it in seconds, and the output of every commit is a lot of work) */
 	int trace = getenv("CARENDER_TRACE") != 0;
 	for (;;) {
-		kr = mach_msg(buf, 2 | (ndelay ? 0x100 : 0) | 0x100000 /* RCV_MSG | RCV_TIMEOUT (while a cfmr is waiting) | RCV_LARGE */ | 0x03000000 /* the audit trailer: who sent it */, 0, sizeof(buf), set, ndelay ? 200 : 0, 0);
+		kr = mach_msg(buf, 2 | (ndelay || nwatch || cafd >= 0 ? 0x100 : 0) | 0x100000 /* RCV_MSG | RCV_TIMEOUT (while a cfmr is waiting, image queues are watched, WindowServer may ask) | RCV_LARGE */ | 0x03000000 /* the audit trailer: who sent it */, 0, sizeof(buf), set, ndelay ? 200 : nwatch ? 8 : 50, 0);
 		flush_delayed();
+		ca_requests();
+		scan_queues();
 		if (kr == 0x10004003) continue;
 		if (kr != 0) { out("carender-stub: receive error "); hex((u32)kr, 8); out("\n"); continue; }
 		if (buf[5] == 0x0ca0c7e1 && buf[2] != 0) {	/* the window server asks for a render context of its own (on the Mac WindowServer calls CARenderContextNew, CARenderContextGetId and
@@ -266,7 +356,7 @@ main(void)
 									if (of2 >= 0) { write(of2, (void *)ad, sz > 0x1000 ? 0x1000 : sz); close(of2); }
 								}
 								ca_send(2, hd, 8, (void *)ad, (u32)sz);
-								mach_vm_deallocate(mach_task_self_, ad, sz);
+								keep_recent(nmsg, k, ad, sz);	/* kept mapped for a while: WindowServer may name it as an image queue */
 							}
 						}
 						off += 12;
