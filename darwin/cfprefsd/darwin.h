@@ -43,6 +43,7 @@ struct passwd { char *pw_name; char *pw_passwd; uid_t pw_uid; gid_t pw_gid; long
 #define O_EXCL		0x0800
 #define O_DIRECTORY	0x100000
 #define O_CLOEXEC	0x1000000
+#define O_NOFOLLOW	0x0100
 #define F_GETFL		3
 #define S_IFMT		0170000
 #define S_IFDIR		0040000
@@ -168,6 +169,7 @@ extern void xpc_dictionary_set_uint64(xpc_object_t d, const char *k, uint64_t v)
 extern _Bool xpc_dictionary_get_bool(xpc_object_t d, const char *k);
 extern void xpc_dictionary_set_bool(xpc_object_t d, const char *k, _Bool v);
 extern void xpc_dictionary_set_data(xpc_object_t d, const char *k, const void *p, size_t n);
+extern void xpc_dictionary_set_fd(xpc_object_t d, const char *k, int fd);
 extern int xpc_dictionary_dup_fd(xpc_object_t d, const char *k);
 extern _Bool xpc_dictionary_apply(xpc_object_t d, _Bool (^f)(const char *k, xpc_object_t v));
 extern size_t xpc_dictionary_get_count(xpc_object_t d);

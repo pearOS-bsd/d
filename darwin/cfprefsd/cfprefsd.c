@@ -157,7 +157,9 @@ struct source {
 	char *container;
 	int byhost, managed, anyuser;
 	int shmidx;
-	CFMutableDictionaryRef plist;	/* NULL until loaded */
+	CFMutableDictionaryRef plist;	/* NULL until loaded: the file with the pending changes applied */
+	CFDataRef base;			/* the file's bytes as last read or written (NULL: no file, or an empty one) */
+	xpc_object_t diff;		/* pending changes not yet written: [key, value as the client sent it (null: removed), ...] */
 	int loaded, on_disk, dirty;
 	long disk_size;
 	uid_t owner_uid;
@@ -273,6 +275,15 @@ read_file(const char *path, struct stat *st)
 }
 
 static void
+set_base(struct source *s, CFDataRef d)	/* the file is d now: nothing is pending any more */
+{
+	if (d) CFRetain(d);
+	if (s->base) CFRelease(s->base);
+	s->base = d;
+	if (s->diff) { xpc_release(s->diff); s->diff = NULL; }
+}
+
+static void
 source_load(struct source *s)
 {
 	struct stat st;
@@ -287,10 +298,26 @@ source_load(struct source *s)
 	if (!s->have_owner) { s->owner_uid = st.st_uid; s->owner_gid = st.st_gid; }
 	if (CFDataGetLength(d) > 0) {
 		CFTypeRef pl = CFPropertyListCreateWithData(NULL, d, kCFPropertyListMutableContainersAndLeaves, NULL, NULL);
-		if (pl && CFGetTypeID(pl) == CFDictionaryGetTypeID()) s->plist = (CFMutableDictionaryRef)pl;
+		if (pl && CFGetTypeID(pl) == CFDictionaryGetTypeID()) { s->plist = (CFMutableDictionaryRef)pl; set_base(s, d); }
 		else if (pl) CFRelease(pl);
 	}
 	CFRelease(d);
+}
+
+/*
+ * openPropertyListWithoutDrainingPendingChangesOrValidatingPlistAndReturnFileUID:andMode: (0x7ff8030aed07):
+ * a file of 1 MiB or more goes to the client as a descriptor (PlistFD), which it maps (handleReply:
+ * 0x7ff802f01d35: fstat, mmap of st_size, then CFPropertyListCreateWithData).  Not with ValidatePlist.
+ * The pending changes go next to it as PlistDiff.
+ */
+static int
+plist_fd(struct source *s, xpc_object_t msg)
+{
+	struct stat st;
+	if (xpc_dictionary_get_bool(msg, "ValidatePlist")) return -1;
+	int fd = open(s->path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+	if (fd >= 0 && (fstat(fd, &st) != 0 || st.st_size < 0x100000)) { close(fd); fd = -1; }
+	return fd;
 }
 
 static void
@@ -300,6 +327,7 @@ source_unload(struct source *s)	/* respondToFileWrittenToBehindOurBack: the next
 	s->plist = NULL;
 	s->loaded = 0;
 	s->dirty = 0;
+	set_base(s, NULL);
 }
 
 static CFDataRef
@@ -341,8 +369,8 @@ source_write(struct source *s)
 	int err = errno;
 	while (ok && fsync(fd) != 0 && errno == EINTR) ;
 	close(fd);
-	CFRelease(d);
 	if (!ok || rename(tmp, s->path) != 0) {
+		CFRelease(d);
 		unlink(tmp);
 		if (!ok && err == ENOSPC) return -1;	/* stays dirty (handleWritingResult:) */
 		logf_("cfprefsd: writing %s failed%s\n", s->path, "");
@@ -351,6 +379,8 @@ source_write(struct source *s)
 	s->on_disk = 1;
 	s->disk_size = (long)n;
 	s->dirty = 0;
+	set_base(s, d);
+	CFRelease(d);
 	if (s->mirror && s->mirror->dirty) source_write(s->mirror);
 	return 0;
 }
@@ -692,6 +722,15 @@ set_key(struct source *s, CFStringRef k, xpc_object_t v, pid_t pid)
 		CFDictionarySetValue(s->plist, k, cv);
 		CFRelease(cv);
 	}
+	char *kd = cstr(k);				/* the change queue sent back as PlistDiff until the file is written */
+	if (kd) {
+		if (!s->diff) s->diff = xpc_array_create(NULL, 0);
+		xpc_object_t xk = xpc_string_create(kd);
+		xpc_array_append_value(s->diff, xk);
+		xpc_array_append_value(s->diff, v);
+		xpc_release(xk);
+		free(kd);
+	}
 	if (s->mirror) {			/* the mirrored keys of the global domain */
 		char *kc = cstr(k);
 		if (streq(kc, "AppleLanguages") || streq(kc, "AppleLocale")) {
@@ -783,10 +822,11 @@ handle_source(xpc_object_t msg, struct client *c, int64_t op)
 	}
 	if (!is_write) {					/* read */
 		r = new_reply(msg);
-		if (s->plist) {				/* a missing, empty or unreadable file: no plist at all */
-			CFDataRef d = source_data(s);
-			if (d) { xpc_dictionary_set_data(r, "CFPreferencesPropertyList", CFDataGetBytePtr(d), (size_t)CFDataGetLength(d)); CFRelease(d); }
-		}
+		/* the file (data, or PlistFD when big) and the pending changes on top of it (PlistDiff) */
+		int fd = s->base ? plist_fd(s, msg) : -1;
+		if (fd >= 0) { xpc_dictionary_set_fd(r, "PlistFD", fd); close(fd); }
+		else if (s->base) xpc_dictionary_set_data(r, "CFPreferencesPropertyList", CFDataGetBytePtr(s->base), (size_t)CFDataGetLength(s->base));
+		if (s->diff && xpc_array_get_count(s->diff)) xpc_dictionary_set_value(r, "PlistDiff", s->diff);
 		if (s->mirror) {
 			source_load(s->mirror);
 			if (s->mirror->plist) {
@@ -832,7 +872,12 @@ handle_source(xpc_object_t msg, struct client *c, int64_t op)
 	}
 	int created = !s->on_disk;
 	mark_dirty(s);
-	if (xpc_dictionary_get_bool(msg, "CFPreferencesShouldWriteSynchronously") || created || (role == ROLE_DAEMON && c->euid < 501)) source_write(s);
+	/* handleSourceMessage: (0x7ff80309164b): the daemon forces ShouldWriteSynchronously when the user of the source (the
+	   fixed-up user, not the writer) is root or a role account; kCFPreferencesAnyUser is not one (seen on the Mac: a
+	   root write to AnyUser is answered later with a PlistDiff) */
+	int sys_user = 0;
+	if (role == ROLE_DAEMON && !s->anyuser) { struct passwd *pw = getpwnam(s->user); sys_user = pw && pw->pw_uid < 501; }
+	if (xpc_dictionary_get_bool(msg, "CFPreferencesShouldWriteSynchronously") || created || sys_user) source_write(s);
 	r = new_reply(msg);
 	if (added) {						/* _CFPrefsDomainSizeAcceptabilityForByteCount */
 		long n = s->disk_size + added;
