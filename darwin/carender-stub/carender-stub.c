@@ -51,7 +51,18 @@ static void hex(u64 v, int digits);
 static void ca_send(u32 type, const void *a, u32 alen, const void *b, u32 blen);
 static struct { u32 msg, desc; u64 ad, sz; } recent[64];		/* the shared memories of the last commits, kept mapped for a while: one of them may be a queue */
 static u32 nrecent;
-static struct { u32 msg, desc, cap, lastsid, lastseq; u64 ad, sz; } watch[16];
+static struct { u32 msg, desc, cap, lastsid, lastseq, port; u64 ad, sz; } watch[16];
+static u32 cur_msgno;			/* the number of the complex commit being handled (the key of its out-of-line data and ports) */
+static struct { u32 msg, desc, name; } rports[64];	/* the send rights of the last commits, kept a while: one may be an image queue's client port (ImageQueue::decode: decode_port) */
+static u32 nrports;
+static void keep_port(u32 msg, u32 desc, u32 name)
+{
+	u32 i = nrports % 64;
+
+	if (nrports >= 64 && rports[i].name) mach_port_destroy(mach_task_self_, rports[i].name);
+	rports[i].msg = msg; rports[i].desc = desc; rports[i].name = name;
+	nrports++;
+}
 static u32 nwatch;
 static u32 qdebug;
 static void keep_recent(u32 msg, u32 desc, u64 ad, u64 sz)
@@ -76,13 +87,16 @@ static void ca_requests(void)
 		if (8 + len > sizeof(rb)) { rn = 0; break; }
 		if (rn < 8 + len) break;
 		if (type == 10 && len >= 12 && nwatch < 16) {
-			u32 m = *(u32 *)(rb + 8), d = *(u32 *)(rb + 12), cap = *(u32 *)(rb + 16);
+			u32 m = *(u32 *)(rb + 8), d = *(u32 *)(rb + 12), cap = *(u32 *)(rb + 16), pd = len >= 16 ? *(u32 *)(rb + 20) : 0xffffffffu, cport = 0, j;
+
+			for (j = 0; j < 64 && j < nrports && pd != 0xffffffffu; j++)
+				if (rports[j].name && rports[j].msg == m && rports[j].desc == pd) { cport = rports[j].name; rports[j].name = 0; break; }
 
 			for (i = 0; i < 64 && i < nrecent; i++)
 				if (recent[i].ad && recent[i].msg == m && recent[i].desc == d) {
 					if (recent[i].sz >= 0x1d8 + (u64)cap * 0xa0) {
 						watch[nwatch].msg = m; watch[nwatch].desc = d; watch[nwatch].cap = cap; watch[nwatch].ad = recent[i].ad; watch[nwatch].sz = recent[i].sz;
-						watch[nwatch].lastsid = 0; watch[nwatch].lastseq = 0; nwatch++;
+						watch[nwatch].lastsid = 0; watch[nwatch].lastseq = 0; watch[nwatch].port = cport; nwatch++;
 						recent[i].ad = 0;		/* the queue's mapping is the watch's now */
 						out("carender-stub: watching image queue "); hex(m, 4); out("/"); hex(d, 2); out(" capacity "); hex(cap, 4); out("\n");
 					}
@@ -133,6 +147,15 @@ static void scan_queues(void)
 				rec[0] = watch[q].msg; rec[1] = watch[q].desc; rec[2] = sid; rec[3] = bseq;
 				watch[q].lastsid = sid; watch[q].lastseq = bseq;
 				ca_send(5, rec, 16, 0, 0);
+				if (watch[q].port) {	/* _CACImageQueueDidComposite (MIG simpleroutine 0x9dd4, 44 bytes: NDR, the header's u32 at 0x34, the image's order, its u32 at 0x5c; sent with a send timeout by ImageQueue::did_composite,
+							 * disassembled) on the queue's client port: the client collects the images given back and its drawables are free again */
+					u32 dc[11], k2;
+
+					for (k2 = 0; k2 < 11; k2++) dc[k2] = 0;
+					dc[0] = 0x13; dc[1] = 44; dc[2] = watch[q].port; dc[5] = 0x9dd4; dc[7] = 1;	/* COPY_SEND to the client port; NDR */
+					dc[8] = *(u32 *)(base + 0x34); dc[9] = bseq; dc[10] = *(u32 *)(sl + 0x5c);
+					mach_msg(dc, 0x11 /* SEND_MSG | SEND_TIMEOUT */, 44, 0, 0, 0, 0);
+				}
 			}
 		}
 	}
@@ -374,6 +397,7 @@ main(void)
 						off += 12;
 					}
 				}
+				cur_msgno = nmsg;
 				nmsg++;
 			}
 			{	/* with the pid of the sender (word 10 of the audit trailer, after the message): WindowServer keeps a scene and a window for each client */
@@ -429,7 +453,7 @@ main(void)
 		}
 		if (buf[5] >= 0x9c42 && buf[5] <= 0x9c45 && (buf[0] & 0x80000000) && buf[6] >= 1) {	/* a commit with a send-once right among its descriptors (the client waits on it: no new commit before the answer): an empty message to it.  The descriptors are 12 bytes (port) or 16 (out of line memory) */
 			u32 k, off = 7;		/* word index of the first descriptor */
-			u32 obs[8], nobs = 0, nm = 0;
+			u32 obs[8], obsk[8], nobs = 0, nm = 0;
 
 
 			for (k = 0; k < buf[6] && off + 3 <= 64; k++) {
@@ -451,7 +475,7 @@ main(void)
 					if (mine) {
 						out("carender-stub: fence completed "); hex(buf[off], 8); out("\n");
 						mach_port_destroy(mach_task_self_, buf[off]);		/* the right is given up: a client that waits for the last sender to go (or for the dead name) goes on */
-					} else if (nobs < 8) obs[nobs++] = buf[off];
+					} else if (nobs < 8) { obsk[nobs] = k; obs[nobs++] = buf[off]; }
 				}
 				off += type == 1 ? 4 : 3;
 			}
@@ -468,7 +492,7 @@ main(void)
 				k1 = 0; k2 = 0; (void)pp;
 				out("carender-stub: fence messages sent to "); hex(obs[k], 8); out(" names "); hex(cnt, 1); out(" kr "); hex((u32)k1, 8); out(" "); hex((u32)k2, 8); out("\n");
 			}
-			for (k = 0; k < nobs; k++) { out("carender-stub: port of a commit released "); hex(obs[k], 8); out("\n"); mach_port_destroy(mach_task_self_, obs[k]); }
+			for (k = 0; k < nobs; k++) keep_port(cur_msgno, obsk[k], obs[k]);	/* kept a while, then destroyed: WindowServer may name one as an image queue's client port */
 		}
 		if (buf[5] == 0x9d11 && buf[2] != 0) {			/* ApplyFenceTransaction (__XApplyFenceTransaction of QuartzCore: the request has 2 descriptors, an array of ports and an array of u32; the answer is complex, size 0x70, 4 descriptors: two out-of-line arrays (u64 names, u32 ids: empty here), the receive right of a new port (the client's fence observer listens on it: Observer::activate -> dispatch_mach_connect) and a send right to it (the client puts it into its commits, the server writes 'cfmr' / 'gflr' to it), NDR, four u32) */
 			u32 op = 0, am[28];
