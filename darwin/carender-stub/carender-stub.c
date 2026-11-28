@@ -301,6 +301,30 @@ main(void)
 					out("carender-stub: answered "); hex(buf[5], 8); out("\n");
 				}
 		}
+		if (buf[5] == 0x9d27 && buf[2] != 0) {	/* CASGetDisplays (_CASGetDisplays, decompiled): answer 0x9d8b, complex, 0x38 bytes: one out-of-line descriptor with a property list (an array of dictionaries kCADisplayName,
+							 * kCADisplayDeviceName, kCADisplayId: query_displays), NDR, the byte count again.  The Mac's server gives an application no display: [CADisplay displays] is empty there
+							 * (measured on macOS 26.7.2, from a terminal and as a GUI agent), so the list here is an empty array */
+			static const char pl[] = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><plist version=\"1.0\"><array/></plist>";
+			u32 rp3[14], kr3;
+
+			for (i = 0; i < 14; i++) rp3[i] = 0;
+			rp3[0] = 0x80000012; rp3[1] = 0x38; rp3[2] = buf[2]; rp3[5] = 0x9d8b;
+			rp3[6] = 1;					/* one descriptor */
+			*(unsigned long *)&rp3[7] = (unsigned long)pl;	/* out of line: address, then copy = physical (0), type 1 at byte 11, size */
+			rp3[9] = (1u << 24); rp3[10] = sizeof(pl) - 1;
+			rp3[11] = 0; rp3[12] = 1;			/* NDR */
+			rp3[13] = sizeof(pl) - 1;
+			kr3 = mach_msg(rp3, 1, 0x38, 0, 0, 0, 0);
+			out("carender-stub: displays answered "); hex((u32)kr3, 8); out("\n");
+		}
+		if (buf[5] >= 0x9c42 && buf[5] <= 0x9c45 && (buf[0] & 0x1f) == 0x12 && buf[2] != 0) {	/* a command stream with a reply port in the header (CA::Render::Encoder::send_message with a reply: CAImageQueueCommit, the
+										 * registration of a CAMetalLayer's drawable): the client waits on that port for a message of at most 0x5c bytes, then destroys it (disassembled) */
+			u32 ack[6], kr2;
+
+			ack[0] = 0x12; ack[1] = 24; ack[2] = buf[2]; ack[3] = 0; ack[4] = 0; ack[5] = buf[5] + 100;
+			kr2 = mach_msg(ack, 1, 24, 0, 0, 0, 0);
+			out("carender-stub: command stream answered "); hex((u32)kr2, 8); out("\n");
+		}
 		if (buf[5] >= 0x9c42 && buf[5] <= 0x9c45 && (buf[0] & 0x80000000) && buf[6] >= 1) {	/* a commit with a send-once right among its descriptors (the client waits on it: no new commit before the answer): an empty message to it.  The descriptors are 12 bytes (port) or 16 (out of line memory) */
 			u32 k, off = 7;		/* word index of the first descriptor */
 			u32 obs[8], nobs = 0, nm = 0;
