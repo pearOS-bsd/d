@@ -103,6 +103,12 @@ extern void *memset(void *d, int c, size_t n);
 extern int snprintf(char *buf, size_t n, const char *fmt, ...);
 extern int dprintf(int fd, const char *fmt, ...);
 extern char *getenv(const char *name);
+extern int proc_name(int pid, void *buf, uint32_t size);
+typedef long time_t;
+struct tm { int tm_sec, tm_min, tm_hour, tm_mday, tm_mon, tm_year, tm_wday, tm_yday, tm_isdst; long tm_gmtoff; char *tm_zone; };
+extern time_t time(time_t *t);
+extern struct tm *localtime_r(const time_t *t, struct tm *out);
+extern size_t strftime(char *buf, size_t n, const char *fmt, const struct tm *tm);
 extern int *__error(void);
 #define errno (*__error())
 

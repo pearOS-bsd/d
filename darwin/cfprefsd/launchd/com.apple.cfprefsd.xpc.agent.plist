@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The user's cfprefsd (github.com/pearOS-bsd/d, darwin/cfprefsd): the job of the Mac's /System/Library/LaunchAgents/com.apple.cfprefsd.xpc.agent.plist
+     (argument "agent", service com.apple.cfprefsd.agent, run as the user, started at the first look-up).  @USER@ = the console user. -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.apple.cfprefsd.xpc.agent</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/libexec/pearos/cfprefsd</string>
+		<string>agent</string>
+	</array>
+	<key>MachServices</key>
+	<dict>
+		<key>com.apple.cfprefsd.agent</key>
+		<true/>
+	</dict>
+	<key>UserName</key>
+	<string>@USER@</string>
+	<key>EnableTransactions</key>
+	<true/>
+</dict>
+</plist>

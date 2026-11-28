@@ -472,9 +472,10 @@ client_notify(struct client *c, xpc_object_t note)
 		return;
 	}
 	c->inflight = 1;
+	if (verbose) dprintf(2, "cfprefsd: notify pid %d of %s\n", c->pid, xpc_dictionary_get_string(note, "CFPreferencesDomain"));
 	xpc_retain(c->conn);
 	xpc_connection_send_message_with_reply(c->conn, note, q, ^(xpc_object_t reply) {
-		(void)reply;
+		if (verbose) { char *d = xpc_copy_description(reply); dprintf(2, "cfprefsd: notification reply from pid %d: %s\n", c->pid, d); free(d); }
 		c->inflight = 0;
 		client_send_next(c);
 		xpc_release(c->conn);
@@ -664,7 +665,24 @@ value_size(xpc_object_t v)
 }
 
 static void
-set_key(struct source *s, CFStringRef k, xpc_object_t v)
+mirror_sign(struct source *m, const char *key, pid_t pid)	/* enqueueMirrorSignatureForKey:fromMessage: "Sig_<key>" = "<process>(<pid>): <local time> (<zone>)" */
+{
+	char name[256] = "", when[64] = "", sig[400], k[300];
+	time_t t = time(NULL);
+	struct tm tm;
+	if (proc_name(pid, name, sizeof name) <= 0) snprintf(name, sizeof name, "?");
+	localtime_r(&t, &tm);
+	strftime(when, sizeof when, "%Y-%m-%d %H:%M:%S (%Z)", &tm);
+	snprintf(sig, sizeof sig, "%s(%d): %s", name, (int)pid, when);
+	snprintf(k, sizeof k, "Sig_%s", key);
+	CFStringRef ck = cfstr(k), cv = cfstr(sig);
+	if (ck && cv) CFDictionarySetValue(m->plist, ck, cv);
+	if (ck) CFRelease(ck);
+	if (cv) CFRelease(cv);
+}
+
+static void
+set_key(struct source *s, CFStringRef k, xpc_object_t v, pid_t pid)
 {
 	if (!s->plist) s->plist = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 	if (xpc_get_type(v) == &_xpc_type_null) CFDictionaryRemoveValue(s->plist, k);
@@ -681,6 +699,7 @@ set_key(struct source *s, CFStringRef k, xpc_object_t v)
 			if (!s->mirror->plist) s->mirror->plist = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 			if (xpc_get_type(v) == &_xpc_type_null) CFDictionaryRemoveValue(s->mirror->plist, k);
 			else { CFTypeRef cv = cf_from_xpc(v); if (cv) { CFDictionarySetValue(s->mirror->plist, k, cv); CFRelease(cv); } }
+			mirror_sign(s->mirror, kc, pid);
 			s->mirror->dirty = 1;
 			s->mirror->owner_uid = s->owner_uid; s->mirror->owner_gid = s->owner_gid; s->mirror->have_owner = s->have_owner;
 		}
@@ -764,13 +783,13 @@ handle_source(xpc_object_t msg, struct client *c, int64_t op)
 	}
 	if (!is_write) {					/* read */
 		r = new_reply(msg);
-		if (s->on_disk || s->plist) {
+		if (s->plist) {				/* a missing, empty or unreadable file: no plist at all */
 			CFDataRef d = source_data(s);
 			if (d) { xpc_dictionary_set_data(r, "CFPreferencesPropertyList", CFDataGetBytePtr(d), (size_t)CFDataGetLength(d)); CFRelease(d); }
 		}
 		if (s->mirror) {
 			source_load(s->mirror);
-			if (s->mirror->on_disk || s->mirror->plist) {
+			if (s->mirror->plist) {
 				CFDataRef d = source_data(s->mirror);
 				if (d) { xpc_dictionary_set_data(r, "CFPreferencesValidationPropertyList", CFDataGetBytePtr(d), (size_t)CFDataGetLength(d)); CFRelease(d); }
 			}
@@ -802,13 +821,13 @@ handle_source(xpc_object_t msg, struct client *c, int64_t op)
 	if (multi && xpc_get_type(val) == &_xpc_type_dictionary) {
 		xpc_dictionary_apply(val, ^_Bool(const char *k, xpc_object_t e) {
 			CFStringRef ck = cfstr(k);
-			if (ck) { set_key(s, ck, e); CFRelease(ck); }
+			if (ck) { set_key(s, ck, e, c->pid); CFRelease(ck); }
 			return 1;
 		});
 		added = value_size(val);
 	} else {
 		CFStringRef ck = cfstr(xpc_string_get_string_ptr(key));
-		if (ck) { set_key(s, ck, val); CFRelease(ck); }
+		if (ck) { set_key(s, ck, val, c->pid); CFRelease(ck); }
 		if (xpc_get_type(val) != &_xpc_type_null) added = (long)strlen(xpc_string_get_string_ptr(key)) + value_size(val);
 	}
 	int created = !s->on_disk;
